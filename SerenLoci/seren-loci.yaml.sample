@@ -1,0 +1,61 @@
+# ═══════════════════════════════════════════════════════════════════════
+#  seren-loci.yaml - config for SerenLoci (the left brain)
+# ═══════════════════════════════════════════════════════════════════════
+#
+#  Copy to seren-loci.yaml, edit, and run:
+#     python -m seren_loci --config seren-loci.yaml
+#
+#  Or just run with no config at all - the defaults below are baked in, so
+#  `python -m seren_loci` works zero-config for a local dev spin.
+#
+#  Env vars override file values (handy for Docker/systemd):
+#     SEREN_LOCI_PORT, SEREN_LOCI_HOST, SEREN_LOCI_BEARER_TOKEN,
+#     SEREN_LOCI_DB_PATH, SEREN_LOCI_EMBEDDING_MODEL,
+#     SEREN_LOCI_TRUST_SYSTEM_STORE
+#
+#  What this is: keyed, deterministic facts - exactly one live value per
+#  (project, key), old values kept as history, never blended. Where
+#  SerenMemory is fuzzy episodic recall (the right brain), Loci is the
+#  addressable logic store (the left). Notably ABSENT vs memory: no
+#  consolidator, no tiers, no embedder safe-mode. The finder is a rebuildable
+#  index over the fact text, so there's nothing to migrate and nothing to gate.
+#
+# ═══════════════════════════════════════════════════════════════════════
+
+server:
+  host: 0.0.0.0
+  port: 7422            # neighbor convention: memory 7420, margin 7421, loci 7422
+  # Leave empty for no auth (trusted LAN / dev). Set a token to require
+  #   Authorization: Bearer <token>
+  # on every endpoint except /, /health, and /viewer.
+  bearer_token: ""
+
+storage:
+  # The WHOLE left brain is one sqlite file. ~ is expanded; the parent dir is
+  # created on first run. Back THIS up - it survives package upgrades untouched.
+  db_path: ~/.seren-loci/loci.db
+
+  # OPTIONAL associative finder (the "this smells like that CUDA thing" jump).
+  #   null / unset -> embedding-free FLOOR: exact-key + FTS5 lexical only.
+  #                   Zero vector deps, no torch. Runs on a 4GB laptop / Nano.
+  #   a model name -> builds a sqlite-vec index over the facts so search can
+  #                   make the semantic jump. Exact-key hits ALWAYS still lead
+  #                   at score 1.0; the finder only fills in below them.
+  #
+  # Requires the vector extra:  pip install seren-loci[vector]
+  # (or run the installer with --vector / -Vector, which sets this for you).
+  # all-MiniLM-L6-v2 is ~80MB, CPU-friendly, downloaded on first use.
+  embedding_model: null
+  # embedding_model: sentence-transformers/all-MiniLM-L6-v2
+  embedding_device: cpu   # "cpu", or "cuda" if you've got the VRAM to spare
+
+# -- Corporate / intercepting-proxy support (opt-in) ------------------------
+# If you're on a corporate network that does TLS interception (Zscaler,
+# Netskope, etc.), the proxy's root CA is in your OS trust store but not in
+# Python's bundled certs, so the embedder's model download fails with
+# CERTIFICATE_VERIFY_FAILED. Turn this on to route TLS through the OS store.
+#
+# Requires the corp extra:  pip install seren-loci[corp]
+# Or run the installer with --corp / -Corp (sets this and installs the extra).
+# tls:
+#   trust_system_store: true

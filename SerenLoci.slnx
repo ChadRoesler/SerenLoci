@@ -1,0 +1,42 @@
+<Solution>
+  <Folder Name="/.github/">
+    <File Path=".github/dependabot.yml" />
+  </Folder>
+  <Folder Name="/.github/ISSUE_TEMPLATE/">
+    <File Path=".github/ISSUE_TEMPLATE/bug_report.yml" />
+    <File Path=".github/ISSUE_TEMPLATE/config.yml" />
+  </Folder>
+  <Folder Name="/.github/workflows/">
+    <File Path=".github/workflows/release.yml" />
+  </Folder>
+   <Folder Name="/SerenLociVSCode/">
+    <File Path="SerenLociVSCode/package-lock.json" />
+    <File Path="SerenLociVSCode/package.json" />
+    <File Path="SerenLociVSCode/publish.ps1" />
+    <File Path="SerenLociVSCode/tsconfig.json" />
+  </Folder>
+  <Folder Name="/SerenLociVSCode/resources/">
+    <File Path="SerenLociVSCode/resources/SerenIcon.png" />
+  </Folder>
+   <Folder Name="/SerenLociVSCode/seren_loci-vscode/">
+    <File Path="SerenLociVSCode/seren_loci-vscode/esbuild.js" />
+     <File Path="LICENSE" />
+    <File Path="SerenLociVSCode/seren_loci-vscode/.vscodeignore" />
+   </Folder>
+  <Folder Name="/SerenLociVSCode/seren_loci-vscode/src/">
+    <File Path="SerenLociVSCode/seren_loci-vscode/src/client.ts" />
+    <File Path="SerenLociVSCode/seren_loci-vscode/src/config.ts" />
+    <File Path="SerenLociVSCode/seren_loci-vscode/src/extension.ts" />
+    <File Path="SerenLociVSCode/seren_loci-vscode/src/tools.ts" />
+  </Folder>
+  <Folder Name="/Solution Items/">
+    <File Path=".gitignore" />
+    <File Path="LICENSE" />
+    <File Path="Makefile" />
+    <File Path="README.md" />
+    <File Path="SECURITY.md" />
+  </Folder>
+  <Project Path="SerenLoci/SerenLoci.pyproj" Type="888888a0-9f3d-457c-b088-3a5042f75d52" Id="e5ad2b2f-4465-4a6d-b491-02c5819d2234">
+    <Build Project="false" />
+  </Project>
+</Solution>

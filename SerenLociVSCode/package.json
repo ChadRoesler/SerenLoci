@@ -1,0 +1,288 @@
+{
+  "name": "seren-loci",
+  "displayName": "Seren Loci",
+  "description": "Gives GitHub Copilot and the user access to the SerenLoci left brain - set, get, search, and manage keyed coding/logic facts.",
+  "version": "0.2.0",
+  "publisher": "ChadRoesler",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ChadRoesler/SerenLoci"
+  },
+  "icon": "resources/SerenIcon.png",
+  "galleryBanner": {
+    "color": "#1a1a2e",
+    "theme": "dark"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "AI",
+    "Other"
+  ],
+
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./seren_loci-vscode/dist/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "Seren Loci",
+      "properties": {
+        "serenLoci.endpoint": {
+          "type": "string",
+          "default": "http://localhost:7422",
+          "description": "Base URL of the SerenLoci service. Default port 7422 matches SerenLoci's own default."
+        },
+        "serenLoci.startCommand": {
+          "type": "string",
+          "default": "python -m seren_loci",
+          "scope": "application",
+          "description": "Shell command used to start the SerenLoci service when it is not reachable. Application-scoped so workspace settings cannot override it (security: prevents a malicious .vscode/settings.json from injecting a different command)."
+        },
+        "serenLoci.suppressStartPrompt": {
+          "type": "boolean",
+          "default": false,
+          "description": "Suppress the 'service not reachable - start it?' prompt on extension activation. Use this if you intentionally run SerenLoci only for some projects."
+        },
+        "serenLoci.bearerTokenHint": {
+          "type": "null",
+          "default": null,
+          "markdownDescription": "**Bearer token** is stored securely in the OS keychain, not here.\n\nTo set or update it, run the command:\n\n`Seren Loci: Set Bearer Token` (via `Ctrl+Shift+P`)"
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "serenLoci.setToken",
+        "title": "Seren Loci: Set Bearer Token"
+      },
+      {
+        "command": "serenLoci.startService",
+        "title": "Seren Loci: Start Service"
+      },
+      {
+        "command": "serenLoci.checkHealth",
+        "title": "Seren Loci: Check Service Health"
+      }
+    ],
+    "languageModelTools": [
+      {
+        "name": "seren_loci_set_fact",
+        "tags": [
+          "seren",
+          "loci",
+          "facts"
+        ],
+        "toolReferenceName": "serenSetFact",
+        "displayName": "Set Fact",
+        "userDescription": "Set or replace a keyed fact in SerenLoci.",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Set (or replace) a fact in SerenLoci - the left brain of keyed, deterministic coding/logic knowledge. `project` defaults to '*' (fundamentals: cross-project truths like 'camelCase is life'); pass a concrete project name for a per-project convention. If a live value already exists for this (project, key) it is SUPERSEDED - kept as history, never blended into the new value. ALWAYS include `why` when there is one: it is the hard-won reason the fact is shaped this way, and it is searchable. Use this when the user states a durable preference, rule, or hard-won fact ('we use 4-space indent', 'this env var must be set at compile time').",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "The addressable locus - a dotted identifier like 'posh.brace_style' or 'cuda.no_vmm'."
+            },
+            "value": {
+              "type": "string",
+              "description": "The fact / value itself."
+            },
+            "why": {
+              "type": "string",
+              "description": "The hard-won reason this fact is shaped this way. Searchable; include it whenever there is one."
+            },
+            "project": {
+              "type": "string",
+              "default": "*",
+              "description": "Scope. '*' (default) = fundamentals (cross-project truths). A concrete project name = a per-project convention."
+            }
+          },
+          "required": [
+            "key",
+            "value"
+          ]
+        }
+      },
+      {
+        "name": "seren_loci_get_fact",
+        "tags": [
+          "seren",
+          "loci",
+          "facts"
+        ],
+        "toolReferenceName": "serenGetFact",
+        "displayName": "Get Fact",
+        "userDescription": "Get THE live value for a key.",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Get THE live value for a (project, key), deterministically - exact address in, the thing out, no ranking, no guessing. This is the spine of the left brain. `project` defaults to '*' (fundamentals). Returns {found: false} if there is no live value (a never-set or retired key) - a clean answer, not an error. Use this when you know the exact key you want.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "The exact key to look up (e.g. 'posh.brace_style')."
+            },
+            "project": {
+              "type": "string",
+              "default": "*",
+              "description": "Scope. '*' (default) = fundamentals. A concrete project name for a per-project value."
+            }
+          },
+          "required": [
+            "key"
+          ]
+        }
+      },
+      {
+        "name": "seren_loci_search",
+        "tags": [
+          "seren",
+          "loci",
+          "facts",
+          "search"
+        ],
+        "toolReferenceName": "serenSearch",
+        "displayName": "Search Loci",
+        "userDescription": "Search SerenLoci for relevant facts when you don't know the exact key.",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Search SerenLoci when you DON'T know the exact key - the associative jump ('that CUDA thing', 'the brace rule'). An exact key match leads at score 1.0; otherwise the finder runs (semantic vector search if an embedder is configured, else FTS5 lexical over key/value/why). Each hit carries a normalized 0..1 score and a match_kind. Call this BEFORE answering coding questions that might have a recorded project convention or fundamental rule. project=null (default) searches every scope; a concrete project narrows to it and folds in fundamentals unless you turn that off.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "Natural-language search query."
+            },
+            "n_results": {
+              "type": "integer",
+              "default": 10,
+              "description": "Max hits to return after ranking."
+            },
+            "project": {
+              "type": "string",
+              "description": "Narrow to a project scope. Omit to search every scope (fundamentals + all projects)."
+            },
+            "include_fundamentals": {
+              "type": "boolean",
+              "default": true,
+              "description": "When a project is set, also fold in cross-project fundamentals."
+            },
+            "include_superseded": {
+              "type": "boolean",
+              "default": false,
+              "description": "Include superseded (historical) values."
+            }
+          },
+          "required": [
+            "query"
+          ]
+        }
+      },
+      {
+        "name": "seren_loci_forget_fact",
+        "tags": [
+          "seren",
+          "loci",
+          "facts"
+        ],
+        "toolReferenceName": "serenForgetFact",
+        "displayName": "Forget Fact",
+        "userDescription": "Retire the live value for a key (kept as history).",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Retire the live value for a (project, key) - a soft supersede, 'a flag, not a scalpel'. The row stays as history; it just stops being the live answer, and the key is free to be set fresh later. Returns ok:false if there was no live value to retire. Use when a fact is wrong or outdated, or the user asks to forget a recorded convention.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "The key whose live value should be retired."
+            },
+            "project": {
+              "type": "string",
+              "default": "*",
+              "description": "Scope. '*' (default) = fundamentals. A concrete project name for a per-project value."
+            }
+          },
+          "required": [
+            "key"
+          ]
+        }
+      },
+      {
+        "name": "seren_loci_history",
+        "tags": [
+          "seren",
+          "loci",
+          "facts"
+        ],
+        "toolReferenceName": "serenHistory",
+        "displayName": "Fact History",
+        "userDescription": "Show every value a key has ever held.",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Every value a (project, key) has ever held, newest first - the audit trail the strict-supersede rule preserves. Useful for 'what did we used to think the right answer was, and why did it change'. Empty list if the key is unknown.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "The key to show the history of."
+            },
+            "project": {
+              "type": "string",
+              "default": "*",
+              "description": "Scope. '*' (default) = fundamentals. A concrete project name for a per-project value."
+            }
+          },
+          "required": [
+            "key"
+          ]
+        }
+      },
+      {
+        "name": "seren_loci_list_facts",
+        "tags": [
+          "seren",
+          "loci",
+          "facts"
+        ],
+        "toolReferenceName": "serenListFacts",
+        "displayName": "List Facts",
+        "userDescription": "List the facts in a scope.",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "List facts in scope - a whole project, or everything (omit project). For surveying what the left brain already knows before setting new facts or answering broadly. Pass include_superseded=true to fold in history rows too.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "project": {
+              "type": "string",
+              "description": "Narrow to a project scope. Omit to list every scope."
+            },
+            "include_superseded": {
+              "type": "boolean",
+              "default": false,
+              "description": "Include superseded (historical) rows, not just live facts."
+            }
+          }
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "node seren_loci-vscode/esbuild.js --production",
+    "build": "node seren_loci-vscode/esbuild.js",
+    "watch": "node seren_loci-vscode/esbuild.js --watch",
+    "package": "vsce package",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.90.0",
+    "@types/node": "^20.0.0",
+    "esbuild": "^0.21.0",
+    "typescript": "^5.4.0",
+    "@vscode/vsce": "^3.9.2",
+    "vitest": "^1.0.0"
+  }
+}

@@ -3,6 +3,10 @@
 ##
 ## Get latest from https://github.com/github/gitignore/blob/main/VisualStudio.gitignore
 
+# Local test venvs (created by Makefile targets)
+.venv-base/
+.venv-mcp/
+
 # User-specific files
 *.rsuser
 *.suo
@@ -409,6 +413,8 @@ FodyWeavers.xsd
 
 # VS Code files for those working on multiple tools
 .vscode/*
+# Allow a token-free mcp.json to be committed for team rip-and-win convenience
+!.vscode/mcp.json
 !.vscode/settings.json
 !.vscode/tasks.json
 !.vscode/launch.json
@@ -427,3 +433,51 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# VS
+.vs/
+*.pyproj.user
+
+# SerenLoci runtime state - never commit someone's loci
+.seren-loci/
+seren-loci.yaml          # may contain a bearer token
+chroma/
+
+# Test artifacts
+.pytest_cache/
+
+# -- Seren-specific ----------------------------------------------------------
+# setuptools-scm writes the tag-derived version here at build time; it ships
+# inside the wheel but must never be committed (it'd go stale instantly).
+**/_version.py
+# Local test-runner output (leaks machine hostname/username into XML).
+
+# -- Python ------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+*.whl
+
+# -- VS Code extension build output -----------------------------------------
+# Compiled JS lives in dist/ and is rebuilt by vsce at publish time.
+# Committing it causes spurious diffs and risks shipping stale bundles.
+SerenLociVSCode/seren_loci-vscode/dist/
+SerenLociVSCode/seren_loci-vscode/out/
+SerenLociVSCode/node_modules/
+SerenLociVSCode/seren_loci-vscode/node_modules/
+*.vsix
+TestResults/
