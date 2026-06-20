@@ -1,0 +1,91 @@
+[build-system]
+requires = ["setuptools>=68", "setuptools-scm>=8", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "seren-loci"
+dynamic = ["version"]
+description = "Keyed facts/logic memory for Seren. The left brain - addressable, deterministic, one live value per key."
+readme = "README.md"
+# Upper bound mirrors SerenMemory, but the REASON differs: Loci's floor (exact
+# + FTS5) is pure sqlite + the web stack and would run fine anywhere. The cap
+# exists for the OPTIONAL [vector] extra - sentence-transformers pulls torch,
+# and torch's 3.13 wheel gap is the wall. Capping here keeps `pip install
+# seren-loci[vector]` resolving cleanly instead of exploding on a torch build.
+# LIFT THE <3.13 the day torch ships 3.13 wheels (bump the CI matrix to match
+# in the same commit).
+requires-python = ">=3.10,<3.13"
+license = { text = "GPL-3.0-or-later" }
+authors = [{ name = "Chad Roesler" }]
+keywords = ["llm", "memory", "facts", "logic", "sqlite", "sqlite-vec", "seren"]
+
+# THE FLOOR IS DEP-LIGHT ON PURPOSE. Exact-key + FTS5 lexical search need
+# nothing but sqlite (stdlib) and the web stack. The associative vector finder
+# - sqlite-vec + sentence-transformers - is the [vector] extra below, so the
+# Nano / 4GB-laptop floor never pulls torch unless an operator opts into the
+# "this smells like that CUDA thing" jump. Structural opt-in: capability by
+# install choice, not a runtime flag.
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "pydantic>=2.9.0",
+    "pyyaml>=6.0.2",
+    "httpx>=0.27.0",
+]
+
+[project.optional-dependencies]
+vector = [
+    # The associative finder. sqlite-vec is the index (MIT/Apache, pure C,
+    # ~60KB, arm64 wheels exist - drops onto Jetson without the build saga);
+    # it's brute-force KNN, which is CORRECT for a facts table this size, not a
+    # compromise. sentence-transformers turns fact text into the vectors it
+    # searches. Pinned >=0.1.6 (sqlite-vec is on the 0.1.x line; a >=1.0 pin
+    # would never resolve). Opt-in: `pip install seren-loci[vector]`.
+    "sqlite-vec>=0.1.6",
+    "sentence-transformers>=3.0",
+]
+mcp = [
+    # The Python MCP SDK from Anthropic (FastMCP merged in). Lets a connected
+    # Rhys set_fact/get_fact/search the left brain directly. Same loose pin as
+    # SerenMemory - the SDK moves fast and our server tolerates transport drift.
+    "mcp>=1.0",
+]
+corp = [
+    # Corporate / intercepting-proxy support. Routes Python TLS through the OS
+    # trust store so a corp root CA (Zscaler/Netskope/etc.) is honored without
+    # hand-exporting .pem files. Opt-in: `pip install seren-loci[corp]` +
+    # tls.trust_system_store: true (the --corp installer flag sets both).
+    "truststore>=0.9",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    # silences the starlette->httpx deprecation warning under fastapi.testclient
+    # and future-proofs the test stack against the hard cutover (same as memory).
+    "httpx2>=2.3",
+]
+
+[project.scripts]
+seren-loci = "seren_loci.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["seren_loci*"]
+
+# Ship the viewer HTML inside the wheel when it lands. Same gotcha as
+# SerenMemory: pip strips non-.py files, so GET /viewer would 404 on an
+# installed copy without this. Harmless before the viewer exists (the glob just
+# matches nothing).
+[tool.setuptools.package-data]
+seren_loci = ["viewer/*.html"]
+
+[tool.setuptools_scm]
+# .git is one level above pyproject.toml (repo root, not the SerenLoci subdir)
+root = ".."
+version_scheme = "release-branch-semver"
+# Tag-derived version written into the package (shipped in the wheel, read by
+# __init__ / importlib.metadata). _version.py is gitignored - build artifact.
+version_file = "seren_loci/_version.py"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

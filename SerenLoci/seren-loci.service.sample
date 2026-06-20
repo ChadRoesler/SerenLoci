@@ -1,0 +1,47 @@
+# SerenLoci systemd unit (sample)
+#
+# Install:
+#   1. Edit __TARGET_USER__ and the paths below
+#   2. sudo cp seren-loci.service /etc/systemd/system/
+#   3. sudo systemctl daemon-reload
+#   4. sudo systemctl enable --now seren-loci
+#
+# Logs:  journalctl -u seren-loci -f
+#
+# Tip: you usually don't hand-roll this - the setup scripts generate it for you.
+#   bash seren-loci-setup.sh --service     (Linux, via the generic core)
+# This sample is for understanding what they produce, or rolling your own.
+
+[Unit]
+Description=SerenLoci - keyed facts / the left brain
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__TARGET_USER__
+WorkingDirectory=/home/__TARGET_USER__/seren-loci
+
+# Use the venv's python. Adjust the venv path to wherever you installed.
+ExecStart=/home/__TARGET_USER__/seren-venvs/loci/bin/python -m seren_loci --config /home/__TARGET_USER__/seren-loci/seren-loci.yaml
+
+# Force UTF-8 stdio regardless of locale, so an emoji or smart-quote in a
+# fact's why-text can never crash the logger. The installer sets this too.
+Environment=PYTHONUTF8=1
+
+# Config can also come from env - uncomment + set as needed:
+# Environment=SEREN_LOCI_PORT=7422
+# Environment=SEREN_LOCI_BEARER_TOKEN=
+# Environment=SEREN_LOCI_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
+
+Restart=on-failure
+RestartSec=5
+
+# The floor (sqlite + FTS5) barely touches memory. Only the OPTIONAL [vector]
+# embedder wants headroom - sentence-transformers plus a small model is a few
+# hundred MB. 1G is comfortable for all-MiniLM-L6-v2; bump it if you point
+# embedding_model at something larger.
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target

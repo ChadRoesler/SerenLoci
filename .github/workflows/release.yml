@@ -1,0 +1,157 @@
+name: Build & Release
+
+on:
+  push:
+    branches: ["**"]
+    tags:
+      - "v*"
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    name: "Test py${{ matrix.python-version }} [${{ matrix.extras }}]"
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+        extras: ["dev", "dev,vector", "dev,mcp", "dev,corp", "dev,corp,mcp", "dev,mcp,vector", "dev,corp,vector", "dev,corp,mcp,vector"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # setuptools-scm needs full history + tags
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package and deps (extras = ${{ matrix.extras }})
+        run: pip install -e ".[${{ matrix.extras }}]"
+        working-directory: SerenLoci
+        env:
+          # Tests don't care about the real version; pin one so scm never has
+          # to compute from history (and so a tagless branch can't trip it).
+          SETUPTOOLS_SCM_PRETEND_VERSION: "0.0.0"
+
+      - name: Run tests
+        run: python -m pytest tests/ -v
+        working-directory: SerenLoci
+
+  test-vscode:
+    runs-on: ubuntu-latest
+    name: "Test VSCode extension"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        working-directory: SerenLociVSCode
+        run: npm install
+
+      - name: Run extension unit tests
+        working-directory: SerenLociVSCode
+        run: npm test
+
+  build-and-release:
+    needs: [test, test-vscode]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # setuptools-scm derives the version from the tag graph
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install build
+        run: pip install build
+
+      - name: Build wheel and sdist
+        run: python -m build
+        working-directory: SerenLoci
+
+      - name: Upload dist as artifact (handed to the publish job)
+        uses: actions/upload-artifact@v4
+        with:
+          name: seren-loci-dist
+          path: SerenLoci/dist/
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: SerenLoci/dist/*
+
+  pypi-publish:
+    needs: [build-and-release]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/seren-loci
+    permissions:
+      id-token: write   # MANDATORY for Trusted Publishing; job-level = least privilege
+    steps:
+      - name: Download the built dist
+        uses: actions/download-artifact@v4
+        with:
+          name: seren-loci-dist
+          path: dist/
+
+      - name: Publish to PyPI (tokenless)
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+  build-vscode:
+    needs: [test, test-vscode]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Stamp version from the git tag
+        working-directory: SerenLociVSCode
+        run: npm pkg set version="${GITHUB_REF#refs/tags/v}"
+
+      - name: Install dependencies
+        working-directory: SerenLociVSCode
+        run: npm install
+
+      - name: Build and package
+        working-directory: SerenLociVSCode
+        run: |
+          npm run build -- --production
+          npm run package
+
+      - name: Publish to the VS Code Marketplace
+        working-directory: SerenLociVSCode
+        run: npx @vscode/vsce publish --packagePath $(ls *.vsix)
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+
+      - name: Upload .vsix to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: SerenLociVSCode/*.vsix
