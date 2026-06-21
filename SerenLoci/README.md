@@ -1,19 +1,19 @@
 # SerenLoci
 
-**The left brain.** A keyed facts-and-logic store for the Seren constellation —
+**The left brain.** A keyed facts-and-logic store for the Seren constellation -
 addressable, deterministic, exactly one live value per key.
 
 Where [SerenMemory](https://github.com/ChadRoesler/SerenMemory) (the right
-brain) holds fuzzy, episodic memory — *"we ground on the embedder migration for
-a week, it was a slog"* — Loci holds **facts**:
+brain) holds fuzzy, episodic memory - *"we ground on the embedder migration for
+a week, it was a slog"* - Loci holds **facts**:
 
 ```
 { project, key, value, why }
 ```
 
 `camelCase is life`. `braces on a new line in posh`. `GGML_CUDA_NO_VMM=ON must
-be set at compile time` — *because the env var isn't honored at runtime on
-Jetson*. A locus has an **address**. You go *to* it and get *the* thing — you
+be set at compile time` - *because the env var isn't honored at runtime on
+Jetson*. A locus has an **address**. You go *to* it and get *the* thing - you
 don't grope around for something that rhymes.
 
 ---
@@ -21,19 +21,19 @@ don't grope around for something that rhymes.
 ## Why it's shaped like this
 
 **One live value per key, enforced by the database.** Set a new value for a key
-and the old one is *superseded* — kept as history, pointed at by the new row,
+and the old one is *superseded* - kept as history, pointed at by the new row,
 **never blended**. A vibed-together fact is worse than no fact, so the rule is
 strict, and it's not enforced by hope: a `PARTIAL UNIQUE INDEX` makes sqlite
 physically refuse a second live row per `(project, key)`.
 
-**Two tiers.** A reserved project of `*` is the *fundamentals* tier —
+**Two tiers.** A reserved project of `*` is the *fundamentals* tier -
 cross-project truths. A concrete project name (`seren-memory`) is the
-per-project tier — the targeted override. Same split as nano/xavier/dgx
+per-project tier - the targeted override. Same split as nano/xavier/dgx
 prebuilts: the platform-wide truth and the per-board variant.
 
 **The `why` is the point.** A logic store without rationale is just a
 dictionary. The value tells you *what*; the why is what stops you re-learning it
-the painful way — and it's searchable, so "that CUDA thing" finds a fact whose
+the painful way - and it's searchable, so "that CUDA thing" finds a fact whose
 *reason* mentions CUDA even when the key doesn't.
 
 ---
@@ -42,17 +42,17 @@ the painful way — and it's searchable, so "that CUDA thing" finds a fact whose
 
 Three access rungs, cheapest first:
 
-1. **Exact** — `get_fact(project, key)` returns the live value, deterministically.
+1. **Exact** - `get_fact(project, key)` returns the live value, deterministically.
    No embedding, no ranking. You know the address, you get the thing.
-2. **Lexical** — FTS5 full-text over `(key, value, why)` of the live rows. The
+2. **Lexical** - FTS5 full-text over `(key, value, why)` of the live rows. The
    "I sort of remember the words" path.
-3. **Vector** *(additive)* — a [sqlite-vec](https://github.com/asg017/sqlite-vec)
+3. **Vector** *(additive)* - a [sqlite-vec](https://github.com/asg017/sqlite-vec)
    index for the "this smells like that CUDA thing" associative jump. Built
    **only** when you name an embedder.
 
-Rungs 1 and 2 need nothing but sqlite (stdlib) and the web stack — **no torch,
+Rungs 1 and 2 need nothing but sqlite (stdlib) and the web stack - **no torch,
 no GPU, the 4GB-laptop floor**. The vector finder is the ceiling, opted into by
-install, never required. *Where does it sit? How much does it need?* — the floor
+install, never required. *Where does it sit? How much does it need?* - the floor
 needs almost nothing.
 
 ---
@@ -106,8 +106,8 @@ curl -X POST localhost:7422/search -H 'content-type: application/json' \
 | POST   | `/search`        | Exact + finder discovery, ranked.                      |
 | GET    | `/` `/health`    | Service info / liveness.                               |
 
-Every search hit carries a normalized **0–1 score** (`exact`→1.0,
-`vector`→`1/(1+distance)`, `lexical`→bm25 mapped above 0). That's the common
+Every search hit carries a normalized **0-1 score** (`exact`->1.0,
+`vector`->`1/(1+distance)`, `lexical`->bm25 mapped above 0). That's the common
 currency a future **SerenCorpusCallosum** uses to merge left-brain and
 right-brain results on one axis instead of comparing cosines to key-hits.
 
@@ -115,7 +115,7 @@ right-brain results on one axis instead of comparing cosines to key-hits.
 
 ## Config
 
-`seren-loci.yaml` (all optional — defaults are a working zero-config dev setup).
+`seren-loci.yaml` (all optional - defaults are a working zero-config dev setup).
 Env vars (`SEREN_LOCI_*`) override the file.
 
 ```yaml
@@ -135,9 +135,8 @@ tls:
 
 ## Where it sits in the constellation
 
-- **SerenMemory** — the right brain. Fuzzy, consolidated, episodic. General-purpose AI memory protocol.
-- **SerenLoci** — *this*. The left brain. Keyed facts, deterministic, strict-supersede.
-- **SerenMargin** — opinionated private notes, opt-in by deploy.
-- **SerenCorpusCallosum** *(planned)* — fans a query across both hemispheres and merges on the shared score currency.
+- **SerenMemory** - the right brain. Fuzzy, consolidated, episodic. General-purpose AI memory protocol.
+- **SerenLoci** - *this*. The left brain. Keyed facts, deterministic, strict-supersede.
+- **SerenCorpusCallosum** *(planned)* - fans a query across both hemispheres and merges on the shared score currency.
 
-Build for the floor, not the ceiling. The Nano is the floor, not the cap. GPL-3.0-or-later. Rip it and win. 🌭🔧
+Build for the floor, not the ceiling. The Nano is the floor, not the cap. GPL-3.0-or-later. Rip it and win.

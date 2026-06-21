@@ -63,7 +63,9 @@
     <Compile Include="tests\test_vector_sql.py" />
   </ItemGroup>
   <ItemGroup>
+    <Content Include="LICENSE" />
     <Content Include="pyproject.toml" />
+    <Content Include="README.md" />
     <Content Include="seren-loci.service.sample" />
     <Content Include="seren-loci.yaml.sample" />
     <Content Include="seren_loci\tests\__pycache__\conftest.cpython-311-pytest-9.0.3.pyc" />
