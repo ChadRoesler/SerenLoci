@@ -13,18 +13,18 @@ Security fixes are applied to the current release only. Pin to the latest tag.
 
 ## Threat model
 
-SerenLoci is a **self-hosted** service. Nothing is sent to a third party - all loci is stored in a local [ChromaDB](https://www.trychroma.com/) database that you control.
+SerenLoci is a **self-hosted** service. Nothing is sent to a third party - all loci is stored in a local [SqliteDB](https://www.sqlite.org/) database that you control.
 
 The relevant attack surface is:
 
 | Surface | Default | Notes |
 |---------|---------|-------|
-| HTTP API | `127.0.0.1:7420` | Localhost only by default. Exposing on `0.0.0.0` puts it on the network - use bearer auth and a reverse proxy if you do. |
+| HTTP API | `127.0.0.1:7422` | Localhost only by default. Exposing on `0.0.0.0` puts it on the network - use bearer auth and a reverse proxy if you do. |
 | Bearer token | Not set | Optional but strongly recommended for any non-localhost bind. Token is stored in `seren-loci.yaml` - the setup scripts lock file permissions on creation. |
 | MCP endpoint (`/mcp/`) | Same host/port as HTTP API | Subject to the same bearer auth middleware. |
 | Loci viewer (`/viewer`) | Public (loads before auth prompt) | The viewer page itself is public so the token input can render; all data API calls require the bearer token. |
 | Config file | `~/seren-loci/seren-loci.yaml` | May contain the bearer token. Setup scripts set `0600` (Unix) or ACL-lock to the current user (Windows). Do not commit this file. |
-| ChromaDB data | `~/.seren-loci/chroma/` | Local filesystem. Back it up; it is your loci. |
+| SqliteDB data | `~/.seren-loci/loci.db` | Local filesystem. Back it up; it is your memory. |
 
 ---
 
