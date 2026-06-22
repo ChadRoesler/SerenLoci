@@ -10,17 +10,20 @@
     <File Path=".github/workflows/release.yml" />
   </Folder>
    <Folder Name="/SerenLociVSCode/">
+     <File Path="SerenLociVSCode/.vscodeignore" />
+     <File Path="SerenLociVSCode/LICENSE" />
     <File Path="SerenLociVSCode/package-lock.json" />
     <File Path="SerenLociVSCode/package.json" />
     <File Path="SerenLociVSCode/publish.ps1" />
+     <File Path="SerenLociVSCode/README.md" />
     <File Path="SerenLociVSCode/tsconfig.json" />
+     <File Path="SerenLociVSCode/vitest.config.ts" />
   </Folder>
   <Folder Name="/SerenLociVSCode/resources/">
     <File Path="SerenLociVSCode/resources/SerenIcon.png" />
   </Folder>
    <Folder Name="/SerenLociVSCode/seren_loci-vscode/">
     <File Path="SerenLociVSCode/seren_loci-vscode/esbuild.js" />
-     <File Path="LICENSE" />
     <File Path="SerenLociVSCode/seren_loci-vscode/.vscodeignore" />
    </Folder>
   <Folder Name="/SerenLociVSCode/seren_loci-vscode/src/">
@@ -28,6 +31,12 @@
     <File Path="SerenLociVSCode/seren_loci-vscode/src/config.ts" />
     <File Path="SerenLociVSCode/seren_loci-vscode/src/extension.ts" />
     <File Path="SerenLociVSCode/seren_loci-vscode/src/tools.ts" />
+  </Folder>
+  <Folder Name="/SerenLociVSCode/test/">
+    <File Path="SerenLociVSCode/test/client.test.ts" />
+  </Folder>
+  <Folder Name="/SerenLociVSCode/test/mocks/">
+    <File Path="SerenLociVSCode/test/mocks/vscode.ts" />
   </Folder>
   <Folder Name="/Solution Items/">
     <File Path=".gitignore" />
