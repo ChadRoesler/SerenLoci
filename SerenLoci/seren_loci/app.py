@@ -27,7 +27,6 @@ its finder is a derived index it can rebuild from text, so it never needs the
 """
 from __future__ import annotations
 
-import hmac
 import time
 from contextlib import asynccontextmanager, AsyncExitStack
 
@@ -40,22 +39,22 @@ from .routes import fact as fact_routes
 from .routes import facts as facts_routes
 from .routes import search as search_routes
 
+from seren_meninges import get_version
+from seren_meninges.auth import bearer_auth_middleware
 
-# Single source of truth for the reported version: prefer the installed wheel's
-# setuptools-scm metadata, fall back to the package __version__ for an editable
-# checkout. Never let version lookup break startup.
-try:
-    from importlib.metadata import version as _pkg_version, PackageNotFoundError
-    try:
-        APP_VERSION = _pkg_version("seren-loci")
-    except PackageNotFoundError:
-        from . import __version__ as APP_VERSION
-except Exception:  # noqa: BLE001
-    APP_VERSION = "0+unknown"
+# Reported version: the installed wheel's setuptools-scm metadata, falling back
+# to the package __version__ for an editable / source checkout. get_version
+# never raises - a bad lookup yields the fallback, not a startup crash.
+from . import __version__ as _fallback_version
+APP_VERSION = get_version("seren-loci", fallback=_fallback_version)
 
 
 def create_app(config: LociConfig | None = None) -> FastAPI:
     cfg = config or load_config()
+    # Resolve the bearer token ONCE at startup, not per-request: a keyring
+    # lookup on every request would be slow (and could prompt the OS keychain).
+    # The middleware closes over this; a restart picks up a rotated secret.
+    bearer = cfg.server.resolve_bearer()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -106,23 +105,11 @@ def create_app(config: LociConfig | None = None) -> FastAPI:
         lifespan=lifespan,
     )
 
-    # -- Optional bearer auth --
-    # Same trusted-LAN posture as the rest of Seren: a set token is enforced on
-    # everything except the public shell (/, /health, /viewer); empty = no auth.
-    @app.middleware("http")
-    async def bearer_auth(request: Request, call_next):
-        token = cfg.server.bearer_token
-        if token:
-            public = request.url.path in ("/", "/health", "/viewer")
-            if not public:
-                auth = request.headers.get("authorization", "")
-                # Constant-time compare so the 401 path doesn't leak how many
-                # leading bytes matched. Encode so non-ASCII can't raise.
-                expected = f"Bearer {token}"
-                if not hmac.compare_digest(auth.encode("utf-8"),
-                                           expected.encode("utf-8")):
-                    return JSONResponse({"error": "unauthorized"}, status_code=401)
-        return await call_next(request)
+    # -- Bearer auth (shared) --
+    # The constant-time compare + public-paths policy lives in SerenMeninges so
+    # all three services enforce auth identically; a fix there lands everywhere.
+    # Empty token => the middleware mounts but no-ops (trusted-LAN default).
+    app.add_middleware(bearer_auth_middleware(bearer))
 
     # -- Info routes --
     @app.get("/")
