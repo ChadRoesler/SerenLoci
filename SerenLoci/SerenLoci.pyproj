@@ -26,8 +26,6 @@
     <Folder Include="seren_loci\mcp\" />
     <Folder Include="seren_loci\models\" />
     <Folder Include="seren_loci\routes\" />
-    <Folder Include="seren_loci\tests\" />
-    <Folder Include="seren_loci\tests\__pycache__\" />
     <Folder Include="seren_loci\viewer\" />
     <Folder Include="tests\" />
     <Folder Include="tests\__pycache__\" />
@@ -45,13 +43,6 @@
     <Compile Include="seren_loci\routes\search.py" />
     <Compile Include="seren_loci\routes\__init__.py" />
     <Compile Include="seren_loci\store.py" />
-    <Compile Include="seren_loci\tests\conftest.py" />
-    <Compile Include="seren_loci\tests\test_embedder_reconcile.py" />
-    <Compile Include="seren_loci\tests\test_mcp_mount.py" />
-    <Compile Include="seren_loci\tests\test_mcp_tools.py" />
-    <Compile Include="seren_loci\tests\test_routes.py" />
-    <Compile Include="seren_loci\tests\test_store.py" />
-    <Compile Include="seren_loci\tests\test_vector_sql.py" />
     <Compile Include="seren_loci\__init__.py" />
     <Compile Include="seren_loci\__main__.py" />
     <Compile Include="tests\conftest.py" />
@@ -68,7 +59,6 @@
     <Content Include="README.md" />
     <Content Include="seren-loci.service.sample" />
     <Content Include="seren-loci.yaml.sample" />
-    <Content Include="seren_loci\tests\__pycache__\conftest.cpython-311-pytest-9.0.3.pyc" />
     <Content Include="seren_loci\viewer\loci.html" />
     <Content Include="tests\__pycache__\conftest.cpython-311-pytest-9.0.3.pyc" />
   </ItemGroup>
