@@ -4,8 +4,8 @@ constellation: addressable, deterministic, one live value per key.
 
 The deterministic spine (exact + FTS5 lexical) runs embedding-free on the
 floor. An optional sqlite-vec finder adds the associative jump when an
-embedder is configured. Pairs with SerenLoci (the right brain) under a
-future SerenCorpusCallosum.
+embedder is configured. Pairs with SerenMemory (the right brain),
+both federated by the now-live SerenCorpusCallosum.
 """
 from __future__ import annotations
 

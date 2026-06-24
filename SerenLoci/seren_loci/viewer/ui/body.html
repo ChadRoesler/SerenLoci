@@ -1,0 +1,51 @@
+<div id="globalErr"></div>
+
+<!-- FACTS -->
+<section class="view active" id="facts">
+    <div class="facts-wrap">
+        <aside>
+            <div class="chambers" id="chambers"></div>
+            <div class="toggles">
+                <label class="chk"><input type="checkbox" id="showSuperseded" /> show superseded (history)</label>
+            </div>
+        </aside>
+        <div>
+            <div class="stack" id="factStack"><div class="empty">Loading the stacks…</div></div>
+        </div>
+    </div>
+</section>
+
+<!-- SEARCH -->
+<section class="view" id="search">
+    <div class="search-bar">
+        <input class="q" id="searchQ" placeholder="search key / value / why - or type an exact key for a 1.0 hit" />
+        <select id="searchScope"><option value="">All scopes</option></select>
+        <button class="btn" id="searchBtn">Search</button>
+    </div>
+    <div class="opts">
+        <label class="chk"><input type="checkbox" id="incFund" checked /> include fundamentals</label>
+        <label class="chk"><input type="checkbox" id="incSup" /> include superseded</label>
+        <label class="chk">n_results <input type="number" id="nRes" value="10" min="1" max="50" style="width:62px; margin-left:6px;" /></label>
+    </div>
+    <div class="served" id="served"></div>
+    <div class="stack" id="searchStack"><div class="empty">Discovery path: exact key → finder (vector if configured, else lexical).</div></div>
+</section>
+
+<!-- HISTORY -->
+<section class="view" id="history">
+    <div class="search-bar">
+        <select id="histProject" style="min-width:160px;"></select>
+        <input class="q" id="histKey" placeholder="key (e.g. cuda.no_vmm)" />
+        <button class="btn" id="histBtn">Trace</button>
+    </div>
+    <div class="muted" style="font-size:12px; margin-bottom:12px;">Every value a key has ever held, newest first - the audit trail strict-supersede preserves.</div>
+    <div class="stack" id="histStack"><div class="empty">Pick a chamber + key, or hit “history” on any fact.</div></div>
+</section>
+
+<!-- OVERVIEW -->
+<section class="view" id="overview">
+    <div class="stat-row" id="stats"></div>
+    <h3 class="group-h">Chambers by live facts</h3>
+    <div class="bars" id="overviewBars"></div>
+    <p class="muted" id="finderNote" style="margin-top:22px; font-size:12px;"></p>
+</section>
