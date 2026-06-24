@@ -81,7 +81,7 @@ include = ["seren_loci*"]
 # installed copy without this. Harmless before the viewer exists (the glob just
 # matches nothing).
 [tool.setuptools.package-data]
-seren_loci = ["viewer/*.html"]
+seren_loci = ["viewer/ui/*.html", "viewer/ui/*.css", "viewer/ui/*.js"]
 
 [tool.setuptools_scm]
 # .git is one level above pyproject.toml (repo root, not the SerenLoci subdir)

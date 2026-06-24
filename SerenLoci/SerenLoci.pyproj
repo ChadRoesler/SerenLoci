@@ -27,6 +27,7 @@
     <Folder Include="seren_loci\models\" />
     <Folder Include="seren_loci\routes\" />
     <Folder Include="seren_loci\viewer\" />
+    <Folder Include="seren_loci\viewer\ui\" />
     <Folder Include="tests\" />
     <Folder Include="tests\__pycache__\" />
   </ItemGroup>
@@ -59,7 +60,10 @@
     <Content Include="README.md" />
     <Content Include="seren-loci.service.sample" />
     <Content Include="seren-loci.yaml.sample" />
-    <Content Include="seren_loci\viewer\loci.html" />
+    <Content Include="seren_loci\viewer\ui\body.html" />
+    <Content Include="seren_loci\viewer\ui\scripts.js" />
+    <Content Include="seren_loci\viewer\ui\styles.css" />
+    <Content Include="seren_loci\viewer\ui\tabs.html" />
     <Content Include="tests\__pycache__\conftest.cpython-311-pytest-9.0.3.pyc" />
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
