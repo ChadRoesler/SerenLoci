@@ -34,7 +34,7 @@ dependencies = [
     # The shared Seren core: token resolution, config/version helpers, the auth
     # middleware, the viewer baseplate. Pinned <1 so a MAJOR (a security change
     # that can't be defaulted) is the only thing that ever forces a bump here.
-    "seren-meninges>=0.0.1,<1",
+    "seren-meninges>=1.0.0,<2",
 ]
 
 [project.optional-dependencies]
