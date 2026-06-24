@@ -30,8 +30,11 @@ from __future__ import annotations
 import time
 from contextlib import asynccontextmanager, AsyncExitStack
 
+from pathlib import Path
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import HTMLResponse
 
 from .config import LociConfig, load_config
 from .store import LociStore
@@ -41,6 +44,7 @@ from .routes import search as search_routes
 
 from seren_meninges import get_version
 from seren_meninges.auth import bearer_auth_middleware
+from seren_meninges.viewer import render_from_dir
 
 # Reported version: the installed wheel's setuptools-scm metadata, falling back
 # to the package __version__ for an editable / source checkout. get_version
@@ -126,23 +130,35 @@ def create_app(config: LociConfig | None = None) -> FastAPI:
     async def health():
         return {"ok": True, "ts": time.time()}
 
+    # @app.get("/viewer")
+    # async def viewer():
+    #     # Ships INSIDE the package (seren_loci/viewer/loci.html) so it travels
+    #     # with the wheel. 404s gracefully until the viewer exists.
+    #     from pathlib import Path
+    #     pkg_dir = Path(__file__).resolve().parent
+    #     candidates = [
+    #         pkg_dir / "viewer" / "loci.html",
+    #         pkg_dir.parent / "viewer" / "loci.html",
+    #     ]
+    #     html_path = next((p for p in candidates if p.is_file()), None)
+    #     if html_path is None:
+    #         return JSONResponse(
+    #             {"error": "viewer not found",
+    #              "hint": "loci.html not shipped yet; the HTTP API is fully usable without it"},
+    #             status_code=404)
+    #     return FileResponse(html_path, media_type="text/html")
+
+
     @app.get("/viewer")
     async def viewer():
-        # Ships INSIDE the package (seren_loci/viewer/loci.html) so it travels
-        # with the wheel. 404s gracefully until the viewer exists.
-        from pathlib import Path
-        pkg_dir = Path(__file__).resolve().parent
-        candidates = [
-            pkg_dir / "viewer" / "loci.html",
-            pkg_dir.parent / "viewer" / "loci.html",
-        ]
-        html_path = next((p for p in candidates if p.is_file()), None)
-        if html_path is None:
-            return JSONResponse(
-                {"error": "viewer not found",
-                 "hint": "loci.html not shipped yet; the HTTP API is fully usable without it"},
-                status_code=404)
-        return FileResponse(html_path, media_type="text/html")
+        html = render_from_dir(
+            Path(__file__).parent / "viewer" / "ui",
+            title="SerenLoci",
+            brand="Seren<b>Loci</b> · Halls of the Left Brain",
+            subtitle=f"v{APP_VERSION} · one address, one truthv",
+            accent="#5bc8e8",
+        )
+        return HTMLResponse(html)
 
     # -- Fact + search routes --
     app.include_router(fact_routes.router)

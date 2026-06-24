@@ -1,0 +1,7 @@
+<!-- Tab buttons. The shell styles `.tabbar .tab` and its showTab() finds them
+     by that class + matches the panel whose id === data-tab. onclick routes
+     through the leaf switchTab() so the Overview tab still lazy-loads its data. -->
+<button class="tab" data-tab="facts" onclick="switchTab('facts')">Facts</button>
+<button class="tab" data-tab="search" onclick="switchTab('search')">Search</button>
+<button class="tab" data-tab="history" onclick="switchTab('history')">History</button>
+<button class="tab" data-tab="overview" onclick="switchTab('overview')">Overview</button>
