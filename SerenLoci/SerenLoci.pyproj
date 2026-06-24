@@ -61,6 +61,7 @@
     <Content Include="seren-loci.service.sample" />
     <Content Include="seren-loci.yaml.sample" />
     <Content Include="seren_loci\viewer\ui\body.html" />
+    <Content Include="seren_loci\viewer\ui\header_aside.html" />
     <Content Include="seren_loci\viewer\ui\scripts.js" />
     <Content Include="seren_loci\viewer\ui\styles.css" />
     <Content Include="seren_loci\viewer\ui\tabs.html" />
