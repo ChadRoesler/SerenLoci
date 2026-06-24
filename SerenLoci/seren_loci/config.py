@@ -6,6 +6,12 @@ Loads seren-loci.yaml into a typed config object. Same pattern as
 SerenMemory: defaults -> yaml -> env (later wins). Deliberately parallel so
 the two services feel like siblings to anyone operating both.
 
+Loci keeps its OWN pydantic config classes on purpose: operator-edited yaml
+benefits from pydantic's validation, and the config *shape* isn't a shared
+contract. What IS shared with SerenMeninges is the security-critical bit -
+token resolution (ServerConfig.resolve_bearer -> seren_meninges.resolve_token)
+- so "where does the secret come from" is identical across every service.
+
 Resolution order (later wins):
     1. Defaults (this file)
     2. seren-loci.yaml (path from --config or ./seren-loci.yaml)
@@ -26,7 +32,23 @@ class ServerConfig(BaseModel):
     # Neighbor convention: memory 7420, margin 7421, loci 7422. No cute
     # base-36 derivation - just the next free port in the family.
     port: int = 7422
-    bearer_token: str = ""   # empty = no auth (dev / trusted LAN)
+    # Token POINTERS - config holds a pointer to the secret, not (ideally) the
+    # secret itself. Pick one; precedence is inline > keyring > env (see
+    # resolve_bearer). Empty across all three = no auth (dev / trusted LAN).
+    bearer_token: str = ""           # inline literal (escape hatch / tests)
+    bearer_token_env: str = ""       # NAME of an env var holding the token
+    bearer_token_keyring: str = ""   # "service/username" into the OS keychain
+
+    def resolve_bearer(self) -> str:
+        """The token this service requires of callers ("" == open). Resolved
+        through SerenMeninges so every Seren service does it identically:
+        inline literal, OS keychain, or an env var - first one present wins."""
+        from seren_meninges import resolve_token
+        return resolve_token(
+            inline=self.bearer_token or None,
+            keyring_ref=self.bearer_token_keyring or None,
+            env_var=self.bearer_token_env or None,
+        )
 
 
 class StorageConfig(BaseModel):
@@ -76,6 +98,10 @@ def _apply_env_overrides(cfg: LociConfig) -> LociConfig:
         cfg.server.host = v
     if v := env.get("SEREN_LOCI_BEARER_TOKEN"):
         cfg.server.bearer_token = v
+    if v := env.get("SEREN_LOCI_BEARER_TOKEN_ENV"):
+        cfg.server.bearer_token_env = v
+    if v := env.get("SEREN_LOCI_BEARER_TOKEN_KEYRING"):
+        cfg.server.bearer_token_keyring = v
     if v := env.get("SEREN_LOCI_DB_PATH"):
         cfg.storage.db_path = v
     if v := env.get("SEREN_LOCI_EMBEDDING_MODEL"):
