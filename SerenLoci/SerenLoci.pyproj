@@ -12,6 +12,7 @@
     <OutputPath>.</OutputPath>
     <Name>SerenLoci</Name>
     <RootNamespace>SerenLoci</RootNamespace>
+    <TestFramework>Pytest</TestFramework>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
     <DebugSymbols>true</DebugSymbols>
