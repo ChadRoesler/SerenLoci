@@ -35,6 +35,9 @@ dependencies = [
     # middleware, the viewer baseplate. Pinned <1 so a MAJOR (a security change
     # that can't be defaulted) is the only thing that ever forces a bump here.
     "seren-meninges>=1.0.0,<2",
+    # Shared request logging - one copy across the family (SerenSinew). Mounted
+    # outermost (before auth) so even 401s get logged. -> loci-requests.log.
+    "seren-sinew>=1.0.0,<2",
 ]
 
 [project.optional-dependencies]

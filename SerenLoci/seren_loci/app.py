@@ -45,6 +45,7 @@ from .routes import search as search_routes
 from seren_meninges import get_version
 from seren_meninges.auth import bearer_auth_middleware
 from seren_meninges.viewer import render_from_dir
+from seren_sinew.request_log import RequestLoggingMiddleware
 
 # Reported version: the installed wheel's setuptools-scm metadata, falling back
 # to the package __version__ for an editable / source checkout. get_version
@@ -114,6 +115,17 @@ def create_app(config: LociConfig | None = None) -> FastAPI:
     # all three services enforce auth identically; a fix there lands everywhere.
     # Empty token => the middleware mounts but no-ops (trusted-LAN default).
     app.add_middleware(bearer_auth_middleware(bearer))
+
+    # -- Request logging (shared, Sinew) --
+    # Added AFTER auth so it sits OUTERMOST (Starlette mounts LIFO): every
+    # request is logged including auth-rejected 401s, to stderr + the rotating
+    # ~/seren-logs/loci-requests.log. env_prefix=SEREN_LOCI namespaces the knobs
+    # (SEREN_LOCI_LOG_LEVEL / _LOG_QUERY).
+    app.add_middleware(
+        RequestLoggingMiddleware,
+        service_name="seren-loci",
+        env_prefix="SEREN_LOCI",
+    )
 
     # -- Info routes --
     @app.get("/")
