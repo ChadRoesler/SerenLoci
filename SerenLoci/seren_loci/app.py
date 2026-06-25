@@ -154,8 +154,8 @@ def create_app(config: LociConfig | None = None) -> FastAPI:
         html = render_from_dir(
             Path(__file__).parent / "viewer" / "ui",
             title="SerenLoci",
-            brand="Seren<b>Loci</b> · Halls of the Left Brain",
-            subtitle=f"v{APP_VERSION} · one address, one truthv",
+            brand="Seren<b>Loci</b> · Palace of Knowledge",
+            subtitle=f"v{APP_VERSION} · one address, one truth",
             accent="#5bc8e8",
         )
         return HTMLResponse(html)
