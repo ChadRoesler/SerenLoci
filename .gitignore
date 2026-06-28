@@ -481,3 +481,4 @@ SerenLociVSCode/node_modules/
 SerenLociVSCode/seren_loci-vscode/node_modules/
 *.vsix
 TestResults/
+runtime-stores.json
