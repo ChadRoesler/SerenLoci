@@ -120,7 +120,7 @@ def test_dim_change_rebuilds_at_new_width(tmp_db):
     assert _vec_count(s) == 3                  # all live facts re-encoded
     assert _stamp(s) == "stub-8::8"
     hits, kind = s.search("k1", n_results=5)   # and search doesn't dimension-crash
-    assert kind == "vector"
+    assert kind == "hybrid"
     assert any(h.key == "k1" for h in hits)
     s.close()
 
@@ -153,10 +153,10 @@ def test_enable_embedder_after_floor_seed_backfills(tmp_db):
 
     # now light up the embedder over the already-seeded store
     s = _open(tmp_db, "stub-a-4")
-    assert s.finder_kind == "vector"
+    assert s.finder_kind == "hybrid"
     assert _vec_count(s) == 3                   # the pre-seeded facts got indexed
     hits, kind = s.search("k2", n_results=5)
-    assert kind == "vector"
+    assert kind == "hybrid"
     assert any(h.key == "k2" for h in hits)
     s.close()
 
