@@ -30,7 +30,6 @@
     <Folder Include="seren_loci\viewer\" />
     <Folder Include="seren_loci\viewer\ui\" />
     <Folder Include="tests\" />
-    <Folder Include="tests\__pycache__\" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="seren_loci\app.py" />
@@ -49,6 +48,7 @@
     <Compile Include="seren_loci\__main__.py" />
     <Compile Include="tests\conftest.py" />
     <Compile Include="tests\test_embedder_reconcile.py" />
+    <Compile Include="tests\test_hybrid_finder.py" />
     <Compile Include="tests\test_mcp_mount.py" />
     <Compile Include="tests\test_mcp_tools.py" />
     <Compile Include="tests\test_routes.py" />
@@ -66,7 +66,6 @@
     <Content Include="seren_loci\viewer\ui\scripts.js" />
     <Content Include="seren_loci\viewer\ui\styles.css" />
     <Content Include="seren_loci\viewer\ui\tabs.html" />
-    <Content Include="tests\__pycache__\conftest.cpython-311-pytest-9.0.3.pyc" />
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
   <!-- Uncomment the CoreCompile target to enable the Build command in
