@@ -133,12 +133,18 @@ class LociStore:
     # ──────────────────────────────────────────────────────────────────
     #  finder construction (additive - the ceiling, not the floor)
     # ──────────────────────────────────────────────────────────────────
-    def _build_finder(self) -> Optional["_VectorFinder"]:
+    def _build_finder(self) -> Optional["_HybridFinder"]:
+        """Build the finder: hybrid (vector + FTS5) if an embedder is configured,
+        else None (pure FTS5 lexical only).
+
+        The hybrid finder runs BOTH semantic and lexical search in parallel and
+        fuses results via reciprocal rank fusion (RRF) — see _HybridFinder.
+        """
         model = self._config.storage.embedding_model
         if not model:
             return None  # embedding-free floor; FTS carries discovery
         try:
-            return _VectorFinder(
+            return _HybridFinder(
                 self._conn, model, self._config.storage.embedding_device
             )
         except Exception as e:  # noqa: BLE001
@@ -150,14 +156,16 @@ class LociStore:
             # facts table is never at risk either way.
             import logging
             logging.getLogger("seren_loci").warning(
-                "vector finder disabled (%s: %s) - falling back to lexical",
+                "hybrid finder disabled (%s: %s) - falling back to lexical",
                 type(e).__name__, e,
             )
             return None
 
     @property
     def finder_kind(self) -> str:
-        return "vector" if self._finder is not None else "lexical"
+        if self._finder is None:
+            return "lexical"
+        return "hybrid"  # _HybridFinder is always used when an embedder is present
 
     # ──────────────────────────────────────────────────────────────────
     #  WRITE - strict supersede
@@ -309,17 +317,25 @@ class LociStore:
             if f is not None:
                 hits[f.id] = _hit(f, score=1.0, kind="exact")
 
-        # 2. finder
+        # 2. finder — hybrid (vector + FTS5 fused via RRF) when embedder present,
+        #    pure FTS5 lexical otherwise.
         if self._finder is not None:
-            for fid, dist in self._finder.search(query, n_results * 2):
+            # _HybridFinder returns (fact_id, rrf_score) where rrf_score is the
+            # reciprocal-rank-fused relevance (higher = better). We use it
+            # directly as the match score — no distance-to-score conversion
+            # needed because RRF already gives us a calibrated 0..1-ish value.
+            for fid, fused in self._finder.search(query, n_results * 2, scopes):
                 f = self._fact_by_id(fid)
                 if f is None or not _in_scope(f, scopes):
                     continue
                 if f.id in hits:
                     continue  # exact already claimed it
-                score = 1.0 / (1.0 + max(dist, 0.0))   # mirrors SerenLoci
-                hits[f.id] = _hit(f, score=round(score, 6), kind="vector",
-                                  raw_distance=round(dist, 6))
+                # RRF score is a sum of 1/(k + rank). Normalize into [0, 1] by
+                # dividing by max possible score (2/k, since each doc can appear
+                # in at most two rankers: FTS5 + vector).
+                max_possible = 2.0 / _HybridFinder.RRF_K
+                score = min(fused / max_possible, 1.0)
+                hits[f.id] = _hit(f, score=round(score, 6), kind="hybrid")
         else:
             for fid, rel in self._fts_search(query, scopes, n_results * 2):
                 f = self._fact_by_id(fid)
@@ -462,11 +478,20 @@ def _fts_query(raw: str) -> str:
     """Make a user string safe-ish for FTS5 MATCH. We wrap each whitespace
     token in double quotes (FTS5 phrase) so punctuation in 'posh.brace_style'
     or 'cuda-compat' doesn't get read as MATCH operators. Empty -> a token that
-    matches nothing rather than erroring."""
+    matches nothing rather than erroring.
+
+    For short queries (<= 3 tokens) we use AND (default FTS5 behavior — all
+    quoted terms must appear). For longer queries we switch to OR so that a
+    single matching token suffices; this prevents long natural-language queries
+    from returning zero lexical hits when only a few terms happen to appear in
+    any fact row."""
     tokens = [t.replace('"', '') for t in raw.split() if t.strip()]
     if not tokens:
         return '"__seren_loci_no_match__"'
-    return " ".join(f'"{t}"' for t in tokens)
+    quoted = [f'"{t}"' for t in tokens]
+    if len(tokens) <= 3:
+        return " ".join(quoted)
+    return " OR ".join(quoted)
 
 
 def _load_embedder(model_name: str, device: str):
@@ -612,3 +637,118 @@ class _VectorFinder:
             (self._encode(query), k),
         ).fetchall()
         return [(r["id"], float(r["distance"])) for r in rows]
+
+
+# ── the hybrid finder (vector + FTS5, fused via RRF) ────────────────────
+
+class _HybridFinder(_VectorFinder):
+    """Extends _VectorFinder with hybrid FTS5 + vector search via
+    reciprocal rank fusion (RRF).
+
+    Runs BOTH lexical (FTS5) and semantic (vector) search in parallel, then
+    fuses results with RRF. This gives better precision than either ranker
+    alone — FTS5 catches exact/keyword matches, vector catches semantic
+    matches, and RRF boosts documents that rank highly in BOTH lists.
+
+    The RRF constant k=60 is the standard value from the literature
+    (Cormack et al.).  Higher k = more weight on lower-ranked positions;
+    60 is a good default that balances precision and recall.
+
+    SCOPE-AWARE QUERY EMBEDDING:
+        When a single project scope is provided (not FUNDAMENTALS), the
+        vector query is augmented by prepending the project name before the
+        raw query string.  This helps the embedding model disambiguate
+        queries that would otherwise be close in the semantic space of
+        multiple projects — e.g. "rate limiting" under "seren-memory"
+        becomes "seren-memory: rate limiting", nudging the query vector
+        toward the memory-domain cluster.
+    """
+
+    RRF_K: int = 60
+
+    def search(self, query: str, k: int,
+               scopes: list[str] | None = None) -> list[tuple[str, float]]:
+        """Hybrid search: FTS5 + vector → RRF fusion → top-k.
+
+        Returns [(fact_id, rrf_score)] where rrf_score is the RRF
+        combination score (higher = better).  The caller (LociStore.search)
+        normalises this into 0..1 for the score contract.
+
+        Parameters:
+            query  — raw user query string (used for both FTS5 and vector)
+            k      — number of results to return
+            scopes — list of project scopes; passed to FTS5 for filtering
+                     and used for scope-aware vector query augmentation.
+        """
+        # 1. FTS5 search (scoped) — use the module-level _fts_query helper
+        fts_results = self._fts_search(query, scopes or [], k * 2)
+
+        # 2. Vector search (scoped via query augmentation) — scope-aware
+        #    embedding: prepend primary project to the query so the
+        #    embedding model has domain context.
+        vec_results = self._vector_search_augmented(query, k * 2, scopes)
+
+        # 3. RRF fusion: sum 1/(RRF_K + rank) for each doc across both
+        #    rankers.  A doc that ranks highly in both gets a higher score.
+        rrf_scores: dict[str, float] = {}
+        for rank, (fid, _) in enumerate(fts_results):
+            rrf_scores[fid] = rrf_scores.get(fid, 0.0) + 1.0 / (self.RRF_K + rank)
+        for rank, (fid, _) in enumerate(vec_results):
+            rrf_scores[fid] = rrf_scores.get(fid, 0.0) + 1.0 / (self.RRF_K + rank)
+
+        # 4. Sort by fused score descending, trim to k.
+        ranked = sorted(rrf_scores.items(), key=lambda x: -x[1])
+        return ranked[:k]
+
+    # ── internal helpers ──────────────────────────────────────────────
+
+    def _fts_search(self, query: str, scopes: list[str],
+                    limit: int) -> list[tuple[str, float]]:
+        """FTS5 MATCH over live facts in scope. Returns [(fact_id, bm25_rel)]
+        with rel >= 0 (larger = better).  bm25() returns smaller-is-better
+        reals (negative = strong match), so we negate.
+
+        Identical to LociStore._fts_search — duplicated here so the hybrid
+        finder is self-contained and does not need a store reference.
+        """
+        if not scopes:
+            return []
+        placeholders = ",".join("?" for _ in scopes)
+        try:
+            rows = self._conn.execute(
+                f"SELECT f.id AS id, -bm25(facts_fts) AS rel "
+                f"FROM facts_fts "
+                f"JOIN facts f ON f.rowid = facts_fts.rowid "
+                f"WHERE facts_fts MATCH ? "
+                f"  AND f.superseded_at IS NULL "
+                f"  AND f.project IN ({placeholders}) "
+                f"ORDER BY rel DESC LIMIT ?",
+                (_fts_query(query), *scopes, limit),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            # malformed MATCH (e.g. user typed bare punctuation) -> no
+            # lexical hits rather than a 500.
+            return []
+        return [(r["id"], max(r["rel"], 0.0)) for r in rows]
+
+    def _vector_search_augmented(self, query: str, k: int,
+                                 scopes: list[str] | None = None
+                                 ) -> list[tuple[str, float]]:
+        """Vector search with optional scope-aware query augmentation.
+
+        When the query targets a SINGLE domain project, prepend it to the
+        query before embedding so the vector search benefits from domain
+        context.  _resolve_scopes appends FUNDAMENTALS to a project scope for
+        FILTERING, so the raw scope list is usually length 2 ([project,
+        FUNDAMENTALS]) even for a single-project query - keying off
+        len(scopes)==1 made augmentation fire ~never in the default path (and
+        never at all through SCC, which defaults include_fundamentals on). Drop
+        FUNDAMENTALS first, THEN check for a lone domain scope.
+        """
+        domain = [s for s in (scopes or []) if s != FUNDAMENTALS]
+        if len(domain) == 1:
+            augmented = f"{domain[0]}: {query}"
+        else:
+            augmented = query
+        # parent search encodes the (maybe augmented) query and runs KNN
+        return super().search(augmented, k)
