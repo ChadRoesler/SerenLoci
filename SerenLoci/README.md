@@ -108,27 +108,55 @@ curl -X POST localhost:7422/search -H 'content-type: application/json' \
 
 Every search hit carries a normalized **0-1 score** (`exact`->1.0,
 `hybrid`->RRF fused into 0..1, `lexical`->bm25 mapped above 0). That's the common
-currency **SerenCorpusCallosum** uses to merge left-brain and right-brain results
-on one axis instead of comparing cosines to key-hits.
+currency **SerenCorpusCallosum** uses to merge left-brain and
+right-brain results on one axis instead of comparing cosines to key-hits.
 
 ---
 
-## Config
+## The hybrid finder (additive — the ceiling, not the floor)
 
-`seren-loci.yaml` (all optional - defaults are a working zero-config dev setup).
-Env vars (`SEREN_LOCI_*`) override the file.
+When an embedding model *is* configured, rung 3 is no longer a pure vector KNN.
+Instead a `_HybridFinder` runs **both** lexical (FTS5) and semantic (vector) search
+in parallel, then fuses results with **Reciprocal Rank Fusion (RRF)**:
 
-```yaml
-server:
-  host: 0.0.0.0
-  port: 7422
-  bearer_token: ""        # empty = no auth (trusted LAN)
-storage:
-  db_path: ~/.seren-loci/loci.db
-  embedding_model:        # null = floor (no torch). name one to light the vector finder.
-  embedding_device: cpu
-tls:
-  trust_system_store: false   # true (+ [corp]) for TLS-intercepting corp proxies
+```
+rrf_score(fact) = Σ 1/(k + rank_in_ranker)      # k = 60
+                 ranker ∈ {FTS5, vector}
+```
+
+This gives better precision than either ranker alone — FTS5 catches exact/keyword
+matches with high precision, vector catches semantic matches with high recall,
+and RRF boosts documents that rank highly in **both** lists. The old pure-vector
+path (`_VectorFinder`) is replaced by `_HybridFinder` whenever an embedder is
+present; the floor (no embedder) still uses FTS5 only.
+
+**Scope-aware query embedding.** When a single project scope is provided (and
+it isn't the `*` fundamentals tier), the vector query is augmented by prepending
+the project name before the raw query string. For example, searching `"rate limiting"`
+under project `seren-memory` embeds `"seren-memory: rate limiting"` instead —
+nudging the query vector toward the memory-domain cluster so it disambiguates
+facts that share wording across projects.
+
+---
+
+## Tests
+
+| Test file | What it covers |
+|-----------|----------------|
+| `tests/test_store.py` | 18 tests — strict-supersede invariant, exact lookup, project isolation, FTS5 lexical search, scoping, counts, `finder_kind` returns `"lexical"` when no embedder configured |
+| `tests/test_routes.py` | 16 tests — HTTP endpoints, bearer auth, search route returns provenance, `GET /` reports service + finder kind |
+| `tests/test_mcp_tools.py` | 10 tests — MCP tool surface for set/get/search/forget/list/history |
+| `tests/test_mcp_mount.py` | 4 tests — MCP mount attaches tools and route |
+| `tests/test_vector_sql.py` | 2 tests — sqlite-vec KNN ordering + delete SQL contract (gated on `sqlite_vec` install) |
+| `tests/test_embedder_reconcile.py` | 8 tests — vector index reconcile/rebuild/backfill logic with a stub embedder (gated on `sqlite_vec`) |
+| `tests/test_hybrid_finder.py` | 10 tests — RRF fusion boosts docs in both rankers, RRF scores normalised to 0..1, exact still leads, scope-aware query augmentation keeps results in-scope, RRF formula correctness (direct unit test), `finder_kind` returns `"hybrid"` when embedder configured, graceful degradation to lexical if embedder import fails, unscoped search finds all projects |
+
+Run with pytest (sqlite-vec-gated tests need the `[vector]` install or a
+PYTHONPATH into the vector venv's site-packages):
+
+```bash
+pytest tests/                                    # floor tests (no vector needed)
+PYTHONPATH=/path/to/vector-venv/lib/python3.12/site-packages pytest tests/  # all tests
 ```
 
 ---
