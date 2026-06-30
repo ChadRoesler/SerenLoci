@@ -107,9 +107,9 @@ curl -X POST localhost:7422/search -H 'content-type: application/json' \
 | GET    | `/` `/health`    | Service info / liveness.                               |
 
 Every search hit carries a normalized **0-1 score** (`exact`->1.0,
-`vector`->`1/(1+distance)`, `lexical`->bm25 mapped above 0). That's the common
-currency a future **SerenCorpusCallosum** uses to merge left-brain and
-right-brain results on one axis instead of comparing cosines to key-hits.
+`hybrid`->RRF fused into 0..1, `lexical`->bm25 mapped above 0). That's the common
+currency **SerenCorpusCallosum** uses to merge left-brain and right-brain results
+on one axis instead of comparing cosines to key-hits.
 
 ---
 
@@ -137,6 +137,6 @@ tls:
 
 - **SerenMemory** - the right brain. Fuzzy, consolidated, episodic. General-purpose AI memory protocol.
 - **SerenLoci** - *this*. The left brain. Keyed facts, deterministic, strict-supersede.
-- **SerenCorpusCallosum** *(planned)* - fans a query across both hemispheres and merges on the shared score currency.
+- **SerenCorpusCallosum** - fans a query across both hemispheres and merges on the shared score currency.
 
 Build for the floor, not the ceiling. The Nano is the floor, not the cap. GPL-3.0-or-later. Rip it and win.
