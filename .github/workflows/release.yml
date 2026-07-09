@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
         extras: ["dev", "dev,vector", "dev,mcp", "dev,corp", "dev,corp,mcp", "dev,mcp,vector", "dev,corp,vector", "dev,corp,mcp,vector"]
 
     steps:
@@ -97,6 +97,29 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: SerenLoci/dist/*
+  
+  pack-vector-model:
+    needs: [build-and-release]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install git-lfs
+        run: |
+          sudo apt-get install -y git-lfs
+          git lfs install
+
+      - name: Clone full model (LFS-tracked weights + all config files)
+        run: |
+          git clone --depth 1 https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2 all-MiniLM-L6-v2
+          rm -rf all-MiniLM-L6-v2/.git
+
+      - name: Pack as tar.gz (slug as top-level dir for clean extract)
+        run: tar -czf all-MiniLM-L6-v2.tar.gz all-MiniLM-L6-v2/
+
+      - name: Upload to GitHub Release as permanent asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: all-MiniLM-L6-v2.tar.gz
 
   pypi-publish:
     needs: [build-and-release]

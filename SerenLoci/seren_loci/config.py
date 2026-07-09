@@ -70,6 +70,14 @@ class StorageConfig(BaseModel):
     # imported when this is set, so the dep-free path never touches them.
     embedding_model: Optional[str] = None
     embedding_device: str = "cpu"
+    # Where sentence-transformers caches downloaded model weights.
+    # None / "" -> defaults to <db_path parent>/models/ at runtime (see
+    # LociConfig.resolved_model_cache_path). Set explicitly to share weights
+    # across services (e.g. point both SerenLoci and SerenMemory at the same
+    # dir) or to put them on a larger volume. Overridable via
+    # SEREN_LOCI_EMBEDDING_CACHE_PATH. Only created when an embedder is
+    # configured; the embedding-free floor never touches this path.
+    embedding_cache_path: Optional[str] = None
 
 
 class TlsConfig(BaseModel):
@@ -89,6 +97,24 @@ class LociConfig(BaseModel):
         p.parent.mkdir(parents=True, exist_ok=True)
         return p
 
+    def resolved_model_cache_path(self) -> Path:
+        """Absolute path for sentence-transformers model weights.
+
+        If storage.embedding_cache_path is set, use that (expanded + resolved).
+        Otherwise derive from the DB parent so the full data layer lives together:
+            ~/.seren-loci/loci.db  ->  ~/.seren-loci/models/
+
+        The directory is created here so _load_embedder never has to care.
+        Only called from _build_finder, which already short-circuits when no
+        embedder is configured, so the models/ dir is never created on the floor.
+        """
+        if self.storage.embedding_cache_path:
+            p = Path(os.path.expanduser(self.storage.embedding_cache_path)).resolve()
+        else:
+            p = Path(os.path.expanduser(self.storage.db_path)).resolve().parent / "models"
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
 
 def _apply_env_overrides(cfg: LociConfig) -> LociConfig:
     env = os.environ
@@ -104,6 +130,8 @@ def _apply_env_overrides(cfg: LociConfig) -> LociConfig:
         cfg.server.bearer_token_keyring = v
     if v := env.get("SEREN_LOCI_DB_PATH"):
         cfg.storage.db_path = v
+    if v := env.get("SEREN_LOCI_EMBEDDING_CACHE_PATH"):
+        cfg.storage.embedding_cache_path = v
     if v := env.get("SEREN_LOCI_EMBEDDING_MODEL"):
         cfg.storage.embedding_model = v
     if v := env.get("SEREN_LOCI_TRUST_SYSTEM_STORE"):

@@ -144,8 +144,10 @@ class LociStore:
         if not model:
             return None  # embedding-free floor; FTS carries discovery
         try:
+            cache_folder = str(self._config.resolved_model_cache_path())
             return _HybridFinder(
-                self._conn, model, self._config.storage.embedding_device
+                self._conn, model, self._config.storage.embedding_device,
+                cache_folder=cache_folder,
             )
         except Exception as e:  # noqa: BLE001
             # A misconfigured embedder must NOT take down the store. The left
@@ -494,16 +496,122 @@ def _fts_query(raw: str) -> str:
     return " OR ".join(quoted)
 
 
-def _load_embedder(model_name: str, device: str):
+def _load_embedder(model_name: str, device: str, cache_folder: str | None = None):
     """Build the sentence-transformers model behind the finder.
 
     Isolated as a module function ON PURPOSE: it's the single seam tests
     monkeypatch to inject a stub embedder, so the finder's reconcile / rebuild /
     backfill logic can be exercised against REAL sqlite-vec without dragging
     torch into CI. (This is the 'make the encoder injectable' nicety that
-    test_vector_sql.py filed.)"""
+    test_vector_sql.py filed.)
+
+    cache_folder redirects the HuggingFace Hub download root away from the
+    global OS cache (~/.cache/huggingface/hub/) and into the Loci data dir
+    (~/.seren-loci/models/ by default). The model downloads there on first boot
+    and is read from there on every subsequent boot - no network, no HF cache
+    involvement, no 'pytorch_model.bin not found' surprises on a fresh box.
+    Copying ~/.seren-loci/ to a new machine carries the weights with it.
+
+    FALLBACK: if HuggingFace is unreachable or the cache is empty, the model
+    tar.gz is fetched from the GitHub Release that shipped the running version
+    of seren-loci. The archive is extracted into cache_folder so subsequent
+    boots load entirely locally. Only fires on OSError (network failure /
+    missing cache) and only for proper tagged releases (dev builds surface the
+    error clearly instead of attempting a download that can't exist).
+    """
     from sentence_transformers import SentenceTransformer
-    return SentenceTransformer(model_name, device=device)
+    try:
+        return SentenceTransformer(model_name, device=device, cache_folder=cache_folder)
+    except OSError as primary_err:
+        return _load_embedder_from_release(
+            model_name, device, cache_folder, primary_err,
+        )
+
+
+def _load_embedder_from_release(
+    model_name: str,
+    device: str,
+    cache_folder: str | None,
+    primary_err: OSError,
+):
+    """Fallback: download the model tar.gz from the GitHub Release that
+    shipped the running version of seren-loci and load from the extracted dir.
+
+    URL shape: https://github.com/ChadRoesler/SerenLoci/releases/download/
+               v{version}/{slug}.tar.gz
+    where slug = model_name.split('/')[-1]  (e.g. 'all-MiniLM-L6-v2')
+
+    The archive's top-level dir IS the slug, so extractall(cache_folder) lands
+    at cache_folder/slug/, which is exactly what SentenceTransformer expects
+    when given a local path.
+    """
+    import importlib.metadata
+    import logging
+    import re
+    import tarfile
+    import urllib.request
+    from pathlib import Path
+    from sentence_transformers import SentenceTransformer
+
+    log = logging.getLogger("seren_loci")
+
+    # -- version guard: dev/editable builds have no matching release asset --
+    try:
+        version = importlib.metadata.version("seren-loci")
+    except importlib.metadata.PackageNotFoundError:
+        version = "0.0.0+unknown"
+
+    if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+        raise OSError(
+            f"[seren-loci] Cannot load embedder '{model_name}' from HuggingFace "
+            f"({primary_err}) and this is a dev build ({version}) with no "
+            f"matching release asset. Either fix the HuggingFace error or run "
+            f"from a tagged release."
+        ) from primary_err
+
+    slug = model_name.split("/")[-1]
+    url = (
+        f"https://github.com/ChadRoesler/SerenLoci"
+        f"/releases/download/v{version}/{slug}.tar.gz"
+    )
+
+    # cache_folder is guaranteed non-None here: _build_finder always resolves
+    # it before calling us. Belt-and-suspenders default just in case.
+    cache_path = Path(cache_folder) if cache_folder else Path.home() / ".seren-loci" / "models"
+    cache_path.mkdir(parents=True, exist_ok=True)
+    local_model_dir = cache_path / slug
+
+    # Already extracted by a previous fallback run - load directly.
+    if local_model_dir.is_dir():
+        log.info("[seren-loci] loading embedder from cached release copy: %s", local_model_dir)
+        return SentenceTransformer(str(local_model_dir), device=device)
+
+    archive = cache_path / f"{slug}.tar.gz"
+    log.warning(
+        "[seren-loci] HuggingFace unreachable (%s: %s) - downloading %s from release v%s",
+        type(primary_err).__name__, primary_err, slug, version,
+    )
+    try:
+        urllib.request.urlretrieve(url, archive)
+        with tarfile.open(archive) as tf:
+            # filter='data' (Python 3.12+) strips unsafe members; fall back
+            # gracefully on 3.10/3.11 where the kwarg doesn't exist yet.
+            try:
+                tf.extractall(cache_path, filter="data")
+            except TypeError:
+                tf.extractall(cache_path)  # noqa: S202 - pre-3.12 fallback
+    except Exception as fallback_err:
+        raise OSError(
+            f"[seren-loci] Cannot load embedder '{model_name}': "
+            f"HuggingFace failed ({primary_err}) and release fallback also "
+            f"failed ({fallback_err}). "
+            f"To fix: copy the model dir to {local_model_dir} and restart."
+        ) from fallback_err
+    finally:
+        archive.unlink(missing_ok=True)
+
+    log.info("[seren-loci] embedder downloaded from release, loading from %s", local_model_dir)
+    return SentenceTransformer(str(local_model_dir), device=device)
 
 
 # ── the additive vector finder ──────────────────────────────────────────────
@@ -531,11 +639,12 @@ class _VectorFinder:
             crash between the fact insert and the vec add). Usually a no-op.
     """
 
-    def __init__(self, conn: sqlite3.Connection, model_name: str, device: str):
+    def __init__(self, conn: sqlite3.Connection, model_name: str, device: str,
+                 cache_folder: str | None = None):
         import sqlite_vec  # raises if the optional dep isn't installed
 
         self._conn = conn
-        self._model = _load_embedder(model_name, device)
+        self._model = _load_embedder(model_name, device, cache_folder=cache_folder)
         self._dim = self._model.get_sentence_embedding_dimension()
 
         conn.enable_load_extension(True)
