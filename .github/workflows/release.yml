@@ -94,7 +94,7 @@ jobs:
           path: SerenLoci/dist/
 
       - name: Upload to GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: SerenLoci/dist/*
   
@@ -117,7 +117,7 @@ jobs:
         run: tar -czf all-MiniLM-L6-v2.tar.gz all-MiniLM-L6-v2/
 
       - name: Upload to GitHub Release as permanent asset
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: all-MiniLM-L6-v2.tar.gz
 
@@ -175,6 +175,6 @@ jobs:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
 
       - name: Upload .vsix to GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: SerenLociVSCode/*.vsix
