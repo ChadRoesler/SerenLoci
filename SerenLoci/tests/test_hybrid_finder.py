@@ -55,7 +55,7 @@ class _StubEmbedder:
 def _stub_embedder(monkeypatch):
     """Inject the stub through the module seam for every test in this file."""
     monkeypatch.setattr(store_mod, "_load_embedder",
-                        lambda name, device: _StubEmbedder(name))
+                        lambda name, device, cache_folder=None: _StubEmbedder(name))
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
