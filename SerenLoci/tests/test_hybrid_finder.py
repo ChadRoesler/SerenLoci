@@ -25,7 +25,7 @@ from seren_loci.config import LociConfig, StorageConfig
 from seren_loci.models.schemas import FactWrite, FUNDAMENTALS
 from seren_loci.store import LociStore, _HybridFinder
 
-
+pytest.importorskip("sqlite_vec")
 
 
 # ── stub embedder (deterministic, torch-free) ────────────────────────────────
