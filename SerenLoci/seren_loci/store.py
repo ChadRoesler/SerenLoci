@@ -138,7 +138,7 @@ class LociStore:
         else None (pure FTS5 lexical only).
 
         The hybrid finder runs BOTH semantic and lexical search in parallel and
-        fuses results via reciprocal rank fusion (RRF) — see _HybridFinder.
+        fuses results via reciprocal rank fusion (RRF) - see _HybridFinder.
         """
         model = self._config.storage.embedding_model
         if not model:
@@ -319,25 +319,30 @@ class LociStore:
             if f is not None:
                 hits[f.id] = _hit(f, score=1.0, kind="exact")
 
-        # 2. finder — hybrid (vector + FTS5 fused via RRF) when embedder present,
+        # 2. finder - hybrid (vector + FTS5 fused via RRF) when embedder present,
         #    pure FTS5 lexical otherwise.
         if self._finder is not None:
-            # _HybridFinder returns (fact_id, rrf_score) where rrf_score is the
-            # reciprocal-rank-fused relevance (higher = better). We use it
-            # directly as the match score — no distance-to-score conversion
-            # needed because RRF already gives us a calibrated 0..1-ish value.
-            for fid, fused in self._finder.search(query, n_results * 2, scopes):
+            # _HybridFinder.search returns (fact_id, rrf_score, vec_distance,
+            # bm25_rel). The rrf_score ORDERS candidates within this store; the
+            # ABSOLUTE per-lane signals are what become the cross-store-comparable
+            # relevance score. We must NOT score by RRF: a doc at rank 0 in both
+            # lanes always fuses to 2/RRF_K regardless of how good the match
+            # really is, so every single-entity store reported an identical top
+            # score and the corpus callosum's fusion collapsed into a config-order
+            # tie (the All-scc HR 0.056). Scoring from distance/bm25 instead lets
+            # a store whose nearest fact is genuinely far from the query report a
+            # WEAK hit - which is the whole point. (raw_distance, long null on
+            # this path, now carries the real vector distance too.)
+            for fid, _rrf, distance, bm25_rel in self._finder.search(
+                    query, n_results * 2, scopes):
                 f = self._fact_by_id(fid)
                 if f is None or not _in_scope(f, scopes):
                     continue
                 if f.id in hits:
                     continue  # exact already claimed it
-                # RRF score is a sum of 1/(k + rank). Normalize into [0, 1] by
-                # dividing by max possible score (2/k, since each doc can appear
-                # in at most two rankers: FTS5 + vector).
-                max_possible = 2.0 / _HybridFinder.RRF_K
-                score = min(fused / max_possible, 1.0)
-                hits[f.id] = _hit(f, score=round(score, 6), kind="hybrid")
+                score = _hybrid_score(distance, bm25_rel)
+                hits[f.id] = _hit(f, score=round(score, 6), kind="hybrid",
+                                  raw_distance=distance)
         else:
             for fid, rel in self._fts_search(query, scopes, n_results * 2):
                 f = self._fact_by_id(fid)
@@ -476,13 +481,55 @@ def _finder_text(key: str, value: str, why: Optional[str]) -> str:
     return "  ".join(parts)
 
 
+# The exact rung owns 1.0. Every non-exact hit MUST stay strictly below it, or
+# the corpus callosum can't distinguish "I have EXACTLY this" from "I have
+# something close" - which is what let 22 stores tie at the top and made most of
+# them structurally unreachable.
+_MAX_NONEXACT = 0.99
+
+
+def _hybrid_score(distance: Optional[float], bm25_rel: Optional[float]) -> float:
+    """Absolute relevance for a hybrid hit, on the store's 0..1 contract axis.
+
+    Deliberately NOT the RRF value. RRF is a RANK fusion: a doc at rank 0 in both
+    lanes always fuses to 2/RRF_K regardless of how weak the match actually is,
+    so RRF scores are not comparable across stores and collapse SCC's fusion into
+    a tie. We score from the ABSOLUTE lane signals the module contract already
+    prescribes:
+
+        vector  -> 1/(1+distance)              (mirrors SerenLoci /search)
+        lexical -> 0.05 + 0.95 * bm25/(1+bm25)
+
+    and fuse the two with a noisy-OR (1 - prod(1 - s)) so a hit supported by BOTH
+    lanes scores higher than either alone - more independent evidence, higher
+    confidence - while a fact that is semantically far AND only a weak stopword
+    match stays low even when it is its own store's rank-0. Capped strictly below
+    the exact 1.0 so a lone near-perfect vector can't impersonate an exact key.
+    """
+    lane_scores: list[float] = []
+    if distance is not None:
+        lane_scores.append(1.0 / (1.0 + distance))
+    if bm25_rel is not None:
+        base = bm25_rel / (1.0 + bm25_rel)
+        lane_scores.append(0.05 + 0.95 * base)
+    if not lane_scores:
+        # No lane fired (shouldn't happen for a hybrid candidate) - never emit a
+        # phantom score if it somehow does.
+        return 0.0
+    # noisy-OR: both lanes agreeing lifts confidence above either lane alone.
+    miss = 1.0
+    for s in lane_scores:
+        miss *= (1.0 - s)
+    return min(1.0 - miss, _MAX_NONEXACT)
+
+
 def _fts_query(raw: str) -> str:
     """Make a user string safe-ish for FTS5 MATCH. We wrap each whitespace
     token in double quotes (FTS5 phrase) so punctuation in 'posh.brace_style'
     or 'cuda-compat' doesn't get read as MATCH operators. Empty -> a token that
     matches nothing rather than erroring.
 
-    For short queries (<= 3 tokens) we use AND (default FTS5 behavior — all
+    For short queries (<= 3 tokens) we use AND (default FTS5 behavior - all
     quoted terms must appear). For longer queries we switch to OR so that a
     single matching token suffices; this prevents long natural-language queries
     from returning zero lexical hits when only a few terms happen to appear in
@@ -756,7 +803,7 @@ class _HybridFinder(_VectorFinder):
 
     Runs BOTH lexical (FTS5) and semantic (vector) search in parallel, then
     fuses results with RRF. This gives better precision than either ranker
-    alone — FTS5 catches exact/keyword matches, vector catches semantic
+    alone - FTS5 catches exact/keyword matches, vector catches semantic
     matches, and RRF boosts documents that rank highly in BOTH lists.
 
     The RRF constant k=60 is the standard value from the literature
@@ -768,7 +815,7 @@ class _HybridFinder(_VectorFinder):
         vector query is augmented by prepending the project name before the
         raw query string.  This helps the embedding model disambiguate
         queries that would otherwise be close in the semantic space of
-        multiple projects — e.g. "rate limiting" under "seren-memory"
+        multiple projects - e.g. "rate limiting" under "seren-memory"
         becomes "seren-memory: rate limiting", nudging the query vector
         toward the memory-domain cluster.
     """
@@ -776,38 +823,57 @@ class _HybridFinder(_VectorFinder):
     RRF_K: int = 60
 
     def search(self, query: str, k: int,
-               scopes: list[str] | None = None) -> list[tuple[str, float]]:
-        """Hybrid search: FTS5 + vector → RRF fusion → top-k.
+               scopes: list[str] | None = None
+               ) -> list[tuple[str, float, Optional[float], Optional[float]]]:
+        """Hybrid search: FTS5 + vector, RRF-fused for ORDERING, returning the
+        absolute per-lane signals so the caller can score by relevance.
 
-        Returns [(fact_id, rrf_score)] where rrf_score is the RRF
-        combination score (higher = better).  The caller (LociStore.search)
-        normalises this into 0..1 for the score contract.
+        Returns [(fact_id, rrf_score, vec_distance, bm25_rel)]:
+            rrf_score    - reciprocal-rank-fused value. Used ONLY to order and
+                           select candidates. It is NOT a relevance magnitude and
+                           is NOT cross-store comparable (a doc at rank 0 in both
+                           lanes always fuses to 2/RRF_K no matter how weak the
+                           underlying match), so it must never be handed to SCC
+                           as a score.
+            vec_distance - the doc's vector distance, or None if it wasn't a
+                           vector hit. Smaller = closer.
+            bm25_rel     - the doc's bm25 relevance, or None if not an FTS hit.
+                           Larger = stronger.
 
         Parameters:
-            query  — raw user query string (used for both FTS5 and vector)
-            k      — number of results to return
-            scopes — list of project scopes; passed to FTS5 for filtering
+            query  - raw user query string (used for both FTS5 and vector)
+            k      - number of results to return
+            scopes - list of project scopes; passed to FTS5 for filtering
                      and used for scope-aware vector query augmentation.
         """
-        # 1. FTS5 search (scoped) — use the module-level _fts_query helper
+        # 1. FTS5 search (scoped) - use the module-level _fts_query helper
         fts_results = self._fts_search(query, scopes or [], k * 2)
 
-        # 2. Vector search (scoped via query augmentation) — scope-aware
+        # 2. Vector search (scoped via query augmentation) - scope-aware
         #    embedding: prepend primary project to the query so the
         #    embedding model has domain context.
         vec_results = self._vector_search_augmented(query, k * 2, scopes)
 
-        # 3. RRF fusion: sum 1/(RRF_K + rank) for each doc across both
-        #    rankers.  A doc that ranks highly in both gets a higher score.
+        # Preserve the absolute per-lane signals; the caller scores by relevance,
+        # not by rank (see LociStore.search / _hybrid_score).
+        bm25_by_id = {fid: rel for fid, rel in fts_results}
+        dist_by_id = {fid: dist for fid, dist in vec_results}
+
+        # 3. RRF fusion: sum 1/(RRF_K + rank) for each doc across both rankers.
+        #    A doc that ranks highly in both gets a higher ORDERING score (used
+        #    only to sort/select, NOT as the emitted relevance).
         rrf_scores: dict[str, float] = {}
         for rank, (fid, _) in enumerate(fts_results):
             rrf_scores[fid] = rrf_scores.get(fid, 0.0) + 1.0 / (self.RRF_K + rank)
         for rank, (fid, _) in enumerate(vec_results):
             rrf_scores[fid] = rrf_scores.get(fid, 0.0) + 1.0 / (self.RRF_K + rank)
 
-        # 4. Sort by fused score descending, trim to k.
+        # 4. Sort by fused score descending, trim to k, attach absolute signals.
         ranked = sorted(rrf_scores.items(), key=lambda x: -x[1])
-        return ranked[:k]
+        return [
+            (fid, fused, dist_by_id.get(fid), bm25_by_id.get(fid))
+            for fid, fused in ranked[:k]
+        ]
 
     # ── internal helpers ──────────────────────────────────────────────
 
@@ -817,7 +883,7 @@ class _HybridFinder(_VectorFinder):
         with rel >= 0 (larger = better).  bm25() returns smaller-is-better
         reals (negative = strong match), so we negate.
 
-        Identical to LociStore._fts_search — duplicated here so the hybrid
+        Identical to LociStore._fts_search - duplicated here so the hybrid
         finder is self-contained and does not need a store reference.
         """
         if not scopes:

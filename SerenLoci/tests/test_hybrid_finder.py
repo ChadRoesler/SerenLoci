@@ -25,7 +25,7 @@ from seren_loci.config import LociConfig, StorageConfig
 from seren_loci.models.schemas import FactWrite, FUNDAMENTALS
 from seren_loci.store import LociStore, _HybridFinder
 
-pytest.importorskip("sqlite_vec")
+
 
 
 # ── stub embedder (deterministic, torch-free) ────────────────────────────────
@@ -100,7 +100,7 @@ def test_rrf_boosts_doc_in_both_rankers(tmp_db):
     """A fact that appears in BOTH FTS5 and vector top-k gets a higher RRF
     fused score than one appearing in only one ranker."""
     s = _hybrid_store(tmp_db)
-    # Query for "apple" — k1 ("apple pie recipe") should match in both FTS5
+    # Query for "apple" - k1 ("apple pie recipe") should match in both FTS5
     # (contains "apple") and vector (semantically close to "apple").
     # k2 ("banana bread") should only match in FTS5 (contains "banana", no
     # semantic match for "apple"). k3 ("cherry cobbler") may or may not match.
@@ -153,7 +153,7 @@ def test_scope_aware_embedding_augments_query(tmp_db):
     by prepending the project name. We verify this indirectly by checking that
     project-scoped search returns in-scope facts with correct scores."""
     s = _hybrid_store(tmp_db)
-    # Search within proj-a for "apple" — should find pk1 (apple in project A)
+    # Search within proj-a for "apple" - should find pk1 (apple in project A)
     # before the global k1 (apple pie recipe) because the scope-aware embedding
     # nudges toward the project domain.
     hits, kind = s.search("apple", project="proj-a", n_results=10)

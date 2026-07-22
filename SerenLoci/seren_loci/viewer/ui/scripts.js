@@ -1,14 +1,14 @@
-// ── SerenLoci viewer — leaf logic ────────────────────────────────────────────
+// ── SerenLoci viewer - leaf logic ────────────────────────────────────────────
 // Snaps onto the SerenMeninges shell. The shell ALREADY provides api(),
-// escapeHtml(), showTab(), and the bearer-token modal — this file CALLS them,
+// escapeHtml(), showTab(), and the bearer-token modal - this file CALLS them,
 // it never redefines them. (The old carve shipped its own api()/escapeHtml()
 // and wired to a header that no longer exists; that's what was breaking.)
 //
 // What the shell gives us, that we rely on here:
-//   api(path, opts)  — fetch with the saved bearer token auto-attached,
+//   api(path, opts)  - fetch with the saved bearer token auto-attached,
 //                      returns parsed JSON for our endpoints, throws on !ok.
-//   escapeHtml(s)    — the same escaper the monolith had.
-//   showTab(id)      — toggles `.tabbar .tab` + `.view` where id matches.
+//   escapeHtml(s)    - the same escaper the monolith had.
+//   showTab(id)      - toggles `.tabbar .tab` + `.view` where id matches.
 //   the 🔑 token modal (openToken/saveToken/clearToken) + #tokenBtn.
 
 const FUND = "*";

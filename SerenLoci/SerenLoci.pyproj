@@ -48,6 +48,7 @@
     <Compile Include="seren_loci\__main__.py" />
     <Compile Include="tests\conftest.py" />
     <Compile Include="tests\test_embedder_reconcile.py" />
+    <Compile Include="tests\test_fts_stopword_bleed.py" />
     <Compile Include="tests\test_hybrid_finder.py" />
     <Compile Include="tests\test_mcp_mount.py" />
     <Compile Include="tests\test_mcp_tools.py" />
