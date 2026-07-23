@@ -27,6 +27,7 @@ Two asserts, two distinct failures, so a partial fix is legible:
 from __future__ import annotations
 
 from seren_loci.models.schemas import FactWrite
+from seren_loci.store import _fts_query
 
 
 def _seed_two_entities(store):
@@ -102,3 +103,41 @@ def test_isolated_leaf_saturates_unanswerable_question(hybrid_store):
     top = hits[0]
     assert top.score < 1.0, (          # PREDICT RED
         f"isolated leaf handed a phantom {top.score} for {top.why!r}")
+
+
+# ── the _fts_query stopword-filter (the precision half of the fix) ────────────
+#
+# These test the QUERY STRING _fts_query builds, in isolation. The retrieval
+# benefit shows at SCALE (a large store where 'what'/'does' match many rows and
+# skew the candidate set); a 2-fact fixture can't show that, which is exactly why
+# the field bug didn't reproduce in the minimal case. So we pin the mechanism here.
+
+def test_fts_query_strips_stopwords_from_long_or():
+    """A long natural-language question ORs its CONTENT tokens; the scaffolding
+    ('what', 'does') is dropped so it can't drown the discriminating term."""
+    q = _fts_query("What title does Cewellric hold?")
+    assert " OR " in q                      # long query -> OR branch
+    assert '"Cewellric"' in q               # the discriminating term survives
+    low = q.lower()
+    assert '"what"' not in low and '"does"' not in low   # scaffolding stripped
+
+
+def test_fts_query_short_query_is_unchanged_and():
+    """<= 3 tokens still AND every raw word - the short-query branch is untouched,
+    so no stopword is stripped from a deliberate short query."""
+    assert _fts_query("ruler_title Cewellric") == '"ruler_title" "Cewellric"'
+    # 'of' is a stopword but a 3-token query keeps it (AND branch, raw tokens)
+    assert _fts_query("race of Cewellric") == '"race" "of" "Cewellric"'
+
+
+def test_fts_query_all_stopwords_does_not_match_nothing():
+    """A long query that is ALL stopwords keeps its raw tokens rather than
+    collapsing to the no-match sentinel - filtering must never erase the query."""
+    q = _fts_query("what is the of on for the")
+    assert "__seren_loci_no_match__" not in q
+    assert " OR " in q
+
+
+def test_fts_query_empty_still_matches_nothing():
+    """Empty / whitespace-only input still returns the no-match sentinel."""
+    assert _fts_query("   ") == '"__seren_loci_no_match__"'

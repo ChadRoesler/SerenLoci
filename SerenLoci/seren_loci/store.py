@@ -523,6 +523,24 @@ def _hybrid_score(distance: Optional[float], bm25_rel: Optional[float]) -> float
     return min(1.0 - miss, _MAX_NONEXACT)
 
 
+# Retrieval-noise words stripped from the OR (long-query) branch of _fts_query.
+# ORing EVERY token of a long question - "What title does Cewellric hold?" - makes
+# the scaffolding ("what", "does") match unrelated facts all over the store and drown
+# the one rare term that actually identifies the answer ("Cewellric"). That is the
+# stopword bleed that handed the corpus callosum a confident hit from a store
+# answering about a DIFFERENT entity. Deliberately CONSERVATIVE - articles,
+# prepositions, question-words, and auxiliary verbs only, never domain words -
+# because an over-eager list would eat a genuinely rare content term. Postel's law:
+# lenient on the query, but don't let filler outvote substance.
+_FTS_STOPWORDS = frozenset({
+    "a", "an", "and", "are", "as", "at", "be", "by", "can", "did", "do", "does",
+    "for", "from", "had", "has", "have", "how", "in", "into", "is", "it", "its",
+    "of", "on", "or", "that", "the", "their", "them", "then", "there", "these",
+    "this", "to", "was", "were", "what", "when", "where", "which", "who", "whom",
+    "whose", "why", "will", "with", "would",
+})
+
+
 def _fts_query(raw: str) -> str:
     """Make a user string safe-ish for FTS5 MATCH. We wrap each whitespace
     token in double quotes (FTS5 phrase) so punctuation in 'posh.brace_style'
@@ -533,14 +551,29 @@ def _fts_query(raw: str) -> str:
     quoted terms must appear). For longer queries we switch to OR so that a
     single matching token suffices; this prevents long natural-language queries
     from returning zero lexical hits when only a few terms happen to appear in
-    any fact row."""
+    any fact row.
+
+    THE OR BRANCH STOPWORD-FILTERS (the precision fix). ORing every token of a long
+    question lets the scaffolding match unrelated facts and drown the discriminating
+    term, so the OR is built from CONTENT tokens only. The AND/OR choice stays on the
+    RAW token count on purpose: a long question must not collapse into an over-strict
+    AND when filtering happens to leave <=3 content words - requiring the incidental
+    'hold' in 'what title does X hold' would drop the real answer too. The short-query
+    AND branch is untouched (every word of a 1-3 term query is deliberate), and an
+    all-stopword query keeps its raw tokens rather than degrading to match-nothing.
+
+    HONEST LIMIT: this removes the pure-scaffolding bleed, not content-ish collisions
+    like a question's 'title'/'hold' matching a 'ruler_title' / '...-hold' fact - those
+    still surface and are left to the relevance floor + bm25's IDF to rank down. An
+    IDF-weighted query builder (weight rare query terms over common ones) is the
+    deeper fix if the floor ever proves insufficient."""
     tokens = [t.replace('"', '') for t in raw.split() if t.strip()]
     if not tokens:
         return '"__seren_loci_no_match__"'
-    quoted = [f'"{t}"' for t in tokens]
     if len(tokens) <= 3:
-        return " ".join(quoted)
-    return " OR ".join(quoted)
+        return " ".join(f'"{t}"' for t in tokens)          # short query: AND on every word, unchanged
+    content = [t for t in tokens if t.lower() not in _FTS_STOPWORDS] or tokens
+    return " OR ".join(f'"{t}"' for t in content)          # long query: OR on content tokens only
 
 
 def _load_embedder(model_name: str, device: str, cache_folder: str | None = None):
