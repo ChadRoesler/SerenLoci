@@ -28,6 +28,7 @@ its finder is a derived index it can rebuild from text, so it never needs the
 from __future__ import annotations
 
 import time
+import logging
 from contextlib import asynccontextmanager, AsyncExitStack
 
 from pathlib import Path
@@ -43,6 +44,7 @@ from .routes import facts as facts_routes
 from .routes import search as search_routes
 
 from seren_meninges import get_version
+from seren_meninges.updates import updates_payload
 from seren_meninges.auth import bearer_auth_middleware
 from seren_meninges.viewer import render_from_dir
 from seren_sinew.request_log import RequestLoggingMiddleware
@@ -52,6 +54,7 @@ from seren_sinew.request_log import RequestLoggingMiddleware
 # never raises - a bad lookup yields the fallback, not a startup crash.
 from . import __version__ as _fallback_version
 APP_VERSION = get_version("seren-loci", fallback=_fallback_version)
+log = logging.getLogger("seren_loci")
 
 
 def create_app(config: LociConfig | None = None) -> FastAPI:
@@ -67,8 +70,8 @@ def create_app(config: LociConfig | None = None) -> FastAPI:
         app.state.config = cfg
         store = LociStore(cfg)
         app.state.store = store
-        print(f"[seren-loci] store ready at {cfg.resolved_db_path()}")
-        print(f"[seren-loci] facts: {store.counts()} | finder: {store.finder_kind}")
+        log.info(f"[seren-loci] store ready at {cfg.resolved_db_path()}")
+        log.info(f"[seren-loci] facts: {store.counts()} | finder: {store.finder_kind}")
 
         # -- Optional MCP server --
         # Mounted ONLY if the [mcp] extra is installed AND the mcp surface
@@ -136,30 +139,33 @@ def create_app(config: LociConfig | None = None) -> FastAPI:
             "version": APP_VERSION,
             "counts": store.counts(),
             "finder": store.finder_kind,
+            "updates": await updates_payload(
+                getattr(request.app.state, "updates", None),
+                distribution="seren-loci", installed=APP_VERSION),
         }
 
     @app.get("/health")
     async def health():
         return {"ok": True, "ts": time.time()}
 
-    # @app.get("/viewer")
-    # async def viewer():
-    #     # Ships INSIDE the package (seren_loci/viewer/loci.html) so it travels
-    #     # with the wheel. 404s gracefully until the viewer exists.
-    #     from pathlib import Path
-    #     pkg_dir = Path(__file__).resolve().parent
-    #     candidates = [
-    #         pkg_dir / "viewer" / "loci.html",
-    #         pkg_dir.parent / "viewer" / "loci.html",
-    #     ]
-    #     html_path = next((p for p in candidates if p.is_file()), None)
-    #     if html_path is None:
-    #         return JSONResponse(
-    #             {"error": "viewer not found",
-    #              "hint": "loci.html not shipped yet; the HTTP API is fully usable without it"},
-    #             status_code=404)
-    #     return FileResponse(html_path, media_type="text/html")
-
+    try:
+        from seren_meninges.updates import UpdateChecker
+        app.state.updates = UpdateChecker(
+            "seren-loci",
+            enabled=cfg.updates.enabled,
+            index_url=cfg.updates.index_url,
+            ttl_seconds=cfg.updates.check_interval_hours * 3600.0,
+            allow_prerelease=cfg.updates.allow_prerelease,
+            fallback_version=APP_VERSION,
+        )
+    # Catch EVERYTHING, not just ImportError. This whole feature is cosmetic -
+    # seren_meninges/version.py states the contract: a version read must never
+    # crash startup. A too-narrow catch here already bit us: cfg.updates was
+    # missing, the AttributeError sailed past `except ImportError`, and five
+    # services failed to boot on a feature that only draws a badge.
+    except Exception as exc:
+        app.state.updates = None
+        log.info("update checking unavailable (%s)", exc)
 
     @app.get("/viewer")
     async def viewer():

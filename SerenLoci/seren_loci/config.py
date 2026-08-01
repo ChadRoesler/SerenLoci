@@ -19,12 +19,15 @@ Resolution order (later wins):
 """
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any, Optional
 
 import yaml
 from pydantic import BaseModel, Field
+
+log = logging.getLogger(__name__)
 
 
 class ServerConfig(BaseModel):
@@ -86,10 +89,24 @@ class TlsConfig(BaseModel):
     trust_system_store: bool = False
 
 
+class UpdatesConfig(BaseModel):
+    """\"Is there a newer seren-loci\" checking. Cosmetic, opt-outable.
+
+    Needs seren-meninges[updates]. Without it the check reports
+    status="unavailable" rather than silently reading as "you're current" -
+    see seren_meninges/updates.py for why that distinction is load-bearing.
+    """
+    enabled: bool = True
+    check_interval_hours: float = 6.0
+    index_url: str = "https://pypi.org/pypi/{distribution}/json"
+    allow_prerelease: bool = False
+
+
 class LociConfig(BaseModel):
     server: ServerConfig = Field(default_factory=ServerConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     tls: TlsConfig = Field(default_factory=TlsConfig)
+    updates: UpdatesConfig = Field(default_factory=UpdatesConfig)
 
     def resolved_db_path(self) -> Path:
         """Expand ~, ensure the parent dir exists, return an absolute Path."""
@@ -147,8 +164,20 @@ def load_config(path: Optional[str] = None) -> LociConfig:
     candidate = path or os.environ.get("SEREN_LOCI_CONFIG") or "seren-loci.yaml"
     cfg_path = Path(os.path.expanduser(candidate))
     if cfg_path.is_file():
-        with open(cfg_path) as f:
-            data = yaml.safe_load(f) or {}
+        try:
+            # encoding= IS NOT OPTIONAL. Without it Python uses the LOCALE
+            # codec - cp1252 on Windows - and seren-loci.yaml.sample opens
+            # with a `# ═══` banner (U+2550 -> E2 95 90), so byte 0x90 raises
+            # UnicodeDecodeError at position 4. Unguarded, that took the
+            # service down at STARTUP: copy the sample, run on Windows, and
+            # SerenLoci refuses to boot.
+            with open(cfg_path, encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+        except Exception as ex:  # noqa: BLE001
+            # Lenient parse, matching the rest of the family. LOUD, though -
+            # a config that isn't being read is the expensive kind of silence.
+            log.warning("could not read %s: %s — using defaults + env", cfg_path, ex)
+            data = {}
 
     cfg = LociConfig(**data)
     cfg = _apply_env_overrides(cfg)
