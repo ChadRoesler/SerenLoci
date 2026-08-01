@@ -34,7 +34,7 @@ dependencies = [
     # The shared Seren core: token resolution, config/version helpers, the auth
     # middleware, the viewer baseplate. Pinned <1 so a MAJOR (a security change
     # that can't be defaulted) is the only thing that ever forces a bump here.
-    "seren-meninges>=1.0.0,<2",
+    "seren-meninges>=2.0.0,<3",
     # Shared request logging - one copy across the family (SerenSinew). Mounted
     # outermost (before auth) so even 401s get logged. -> loci-requests.log.
     "seren-sinew>=1.0.0,<2",
@@ -53,9 +53,21 @@ vector = [
 ]
 mcp = [
     # The Python MCP SDK from Anthropic (FastMCP merged in). Lets a connected
-    # Rhys set_fact/get_fact/search the left brain directly. Same loose pin as
-    # SerenMemory - the SDK moves fast and our server tolerates transport drift.
-    "mcp>=1.0",
+    # Rhys set_fact/get_fact/search the left brain directly.
+    #
+    # THE <2 CAP IS LOAD-BEARING: mcp 2.0.0 REMOVED FastMCP outright.
+    # `mcp.server.fastmcp` does not exist in 2.x; the server class is now
+    # mcp.server.mcpserver.MCPServer with a different API. Last 1.x that
+    # still carries FastMCP is 1.29.0. Uncapped, a fresh install resolves
+    # 2.0.0, the import fails, the ImportError gate catches it exactly as
+    # designed, and the service comes up in HTTP-only mode with one log
+    # line - i.e. /mcp silently ceases to exist and looks like the extra
+    # just wasn't installed. Cap it, don't hope.
+    #
+    # Lift the cap in the same commit that ports the server to the MCPServer
+    # API - across the whole family at once, since they're copies. Within
+    # 1.x the pin stays loose: our server tolerates transport-name drift.
+    "mcp>=1.0,<2",
 ]
 corp = [
     # Corporate / intercepting-proxy support. Routes Python TLS through the OS
@@ -71,9 +83,23 @@ dev = [
     # and future-proofs the test stack against the hard cutover (same as memory).
     "httpx2>=2.3",
 ]
+# "is there a newer seren-lodestar" reporting on GET /. Opt-in, because a
+# service that never leaves a LAN has no reason to talk to PyPI. Pulls the
+# Meninges extra rather than httpx/packaging directly - the check lives in
+# seren_meninges.updates and only one repo should own that dep set.
+#
+# The floor matches the core dep above: updates.py landed in Meninges 2.0.0.
+# Resolve anything older and the lifespan import fails, leaving you with
+# status="unavailable" forever and no obvious reason why.
+updates = ["seren-meninges[updates]>=2.0.0,<3"]
 
 [project.scripts]
 seren-loci = "seren_loci.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/ChadRoesler/SerenLoci"
+Repository = "https://github.com/ChadRoesler/SerenLoci"
+"Bug Tracker" = "https://github.com/ChadRoesler/SerenLoci/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -90,9 +116,16 @@ seren_loci = ["viewer/ui/*.html", "viewer/ui/*.css", "viewer/ui/*.js"]
 # .git is one level above pyproject.toml (repo root, not the SerenLoci subdir)
 root = ".."
 version_scheme = "release-branch-semver"
-# Tag-derived version written into the package (shipped in the wheel, read by
-# __init__ / importlib.metadata). _version.py is gitignored - build artifact.
+# Write the tag-derived version into the package (shipped in the wheel, read
+# by __init__ / importlib.metadata). Replaces the old sed-on-__init__ hack -
+# version now flows from the git tag with no manual step. _version.py is
+# gitignored; it's a build artifact, never committed.
 version_file = "seren_loci/_version.py"
+# Strip the leading 'v' so "v1.2.3" → "1.2.3"
+tag_regex = "^v(?P<version>[0-9]+\\.[0-9]+\\.[0-9]+.*)$"
+# Used when no git tags exist (local dev, fresh clone). CI release builds
+# override with SETUPTOOLS_SCM_PRETEND_VERSION.
+fallback_version = "0.0.0.dev0"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
