@@ -30,7 +30,14 @@ dependencies = [
     "uvicorn[standard]>=0.32.0",
     "pydantic>=2.9.0",
     "pyyaml>=6.0.2",
-    "httpx>=0.27.0",
+    # httpx is NOT a core runtime dep - seren_loci never imports it. It's only
+    # here for starlette's TestClient (a test-only need, supplied by `dev` /
+    # the release workflow's own "Install a test client" step) and for
+    # seren-meninges[updates]'s PyPI fetch. Listing it unconditionally used to
+    # leak the [updates] capability into every install shape: UpdateChecker's
+    # httpx-importable check would pass even without seren-meninges[updates],
+    # so [vector]/[mcp]/[corp] shapes never reported updates status
+    # "unavailable" as they should. Let the extras own it.
     # The shared Seren core: token resolution, config/version helpers, the auth
     # middleware, the viewer baseplate. Pinned <1 so a MAJOR (a security change
     # that can't be defaulted) is the only thing that ever forces a bump here.
