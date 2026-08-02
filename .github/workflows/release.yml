@@ -111,27 +111,59 @@ jobs:
         env:
           SETUPTOOLS_SCM_PRETEND_VERSION: "0.0.0"
 
-      - name: Install a test client (NOT part of the shape under test)
-        # starlette's TestClient needs httpx at runtime. It is a test tool, not
-        # something seren_loci imports, so adding it cannot mask a missing runtime
-        # dependency - but leaving it out fails the smoke step for a reason that
-        # has nothing to do with the install shape.
-        run: pip install "httpx2" || pip install "httpx"
-
       - name: Import and construct the app OUT OF TREE
+        # No TestClient here on purpose: starlette's TestClient needs httpx at
+        # import time, and httpx is also the exact marker seren_meninges.updates
+        # uses to detect the [updates] extra. Installing httpx just for the test
+        # client would silently gift every shape - including bare/[vector]/[mcp]/
+        # [corp] - the "wired" updates capability, defeating the whole point of
+        # this matrix. Instead, drive the ASGI app directly with the stdlib so
+        # the shape under test is EXACTLY what's on disk, nothing more.
         run: |
           cd "$(mktemp -d)"
           python - <<'PY'
+          import asyncio
+          import json
+
           from seren_loci.app import create_app
-          from fastapi.testclient import TestClient
 
           app = create_app()
           print("app constructed OK")
 
-          with TestClient(app) as c:
-              r = c.get("/")
-          assert r.status_code == 200, f"/ returned {r.status_code}: {r.text[:300]}"
-          u = r.json().get("updates")
+          async def get(path: str):
+              scope = {
+                  "type": "http",
+                  "asgi": {"version": "3.0"},
+                  "http_version": "1.1",
+                  "method": "GET",
+                  "path": path,
+                  "raw_path": path.encode(),
+                  "query_string": b"",
+                  "headers": [],
+                  "server": ("testserver", 80),
+                  "client": ("testclient", 123),
+                  "scheme": "http",
+              }
+              messages = []
+
+              async def receive():
+                  return {"type": "http.request", "body": b"", "more_body": False}
+
+              async def send(message):
+                  messages.append(message)
+
+              async with app.router.lifespan_context(app):
+                  await app(scope, receive, send)
+
+              start = next(m for m in messages if m["type"] == "http.response.start")
+              body = b"".join(
+                  m.get("body", b"") for m in messages if m["type"] == "http.response.body"
+              )
+              return start["status"], body
+
+          status, body = asyncio.run(get("/"))
+          assert status == 200, f"/ returned {status}: {body[:300]!r}"
+          u = json.loads(body).get("updates")
 
           assert isinstance(u, dict), f"/ must always carry an updates dict, got {u!r}"
           expected = {"status", "distribution", "installed", "latest",
