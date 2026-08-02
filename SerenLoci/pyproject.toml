@@ -34,7 +34,7 @@ dependencies = [
     # The shared Seren core: token resolution, config/version helpers, the auth
     # middleware, the viewer baseplate. Pinned <1 so a MAJOR (a security change
     # that can't be defaulted) is the only thing that ever forces a bump here.
-    "seren-meninges>=2.0.0,<3",
+    "seren-meninges>=2.1.0,<3",
     # Shared request logging - one copy across the family (SerenSinew). Mounted
     # outermost (before auth) so even 401s get logged. -> loci-requests.log.
     "seren-sinew>=1.0.0,<2",
@@ -88,10 +88,10 @@ dev = [
 # Meninges extra rather than httpx/packaging directly - the check lives in
 # seren_meninges.updates and only one repo should own that dep set.
 #
-# The floor matches the core dep above: updates.py landed in Meninges 2.0.0.
+# The floor matches the core dep above: updates.py landed in 2.0.0 and updates_payload in 2.1.0.
 # Resolve anything older and the lifespan import fails, leaving you with
 # status="unavailable" forever and no obvious reason why.
-updates = ["seren-meninges[updates]>=2.0.0,<3"]
+updates = ["seren-meninges[updates]>=2.1.0,<3"]
 
 [project.scripts]
 seren-loci = "seren_loci.__main__:main"
