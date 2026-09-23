@@ -31,7 +31,11 @@ log = logging.getLogger(__name__)
 
 
 class ServerConfig(BaseModel):
-    host: str = "0.0.0.0"
+    # Loopback, like every Seren service since seren-meninges 2.3.0. The yaml
+    # path goes through the shared `ServerConfig.from_dict` in load_config, so
+    # the fallback rule is the family's, not a second copy of it. This default
+    # is for a LociConfig built in code with no yaml at all.
+    host: str = "127.0.0.1"
     # Neighbor convention: memory 7420, margin 7421, loci 7422. No cute
     # base-36 derivation - just the next free port in the family.
     port: int = 7422
@@ -184,6 +188,23 @@ def load_config(path: Optional[str] = None) -> LociConfig:
             log.warning("could not read %s: %s — using defaults + env", cfg_path, ex)
             data = {}
 
+    data["server"] = _shared_server_block(data.get("server"))
     cfg = LociConfig(**data)
     cfg = _apply_env_overrides(cfg)
     return cfg
+
+
+def _shared_server_block(raw: Any) -> dict[str, Any]:
+    """Normalise the yaml `server:` block through seren-meninges.
+
+    ONE RULE FOR THE WHOLE FAMILY - see SerenMemory's twin of this function.
+    Loci keeps its own pydantic ServerConfig for the shape the rest of this
+    module is built on, and feeds it the shared library's answer.
+    """
+    from dataclasses import asdict
+
+    from seren_meninges.config import ServerConfig as SharedServer
+
+    shared = SharedServer.from_dict(raw if isinstance(raw, dict) else {},
+                                    default_port=7422)
+    return asdict(shared)
