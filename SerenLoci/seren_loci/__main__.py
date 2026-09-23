@@ -9,6 +9,7 @@ import argparse
 import sys
 
 import uvicorn
+from seren_meninges.exposure import enforce_server
 
 from .app import create_app
 from .config import load_config
@@ -62,15 +63,14 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = load_config(args.config)
+    # FIRST: an open bind with no token is refused here, at zero cost, with the
+    # three ways out printed - not after an embedder has been loaded.
+    enforce_server(cfg.server, service="seren-loci", env_prefix="SEREN_LOCI")
     # Before create_app: building the store may construct the optional embedder,
     # which can pull a model over TLS. On a corp-proxied box the trust store has
     # to be injected first or that download fails with CERTIFICATE_VERIFY_FAILED.
     _maybe_inject_truststore(cfg)
     app = create_app(cfg)
-
-    print(f"[seren-loci] listening on {cfg.server.host}:{cfg.server.port}")
-    print(f"[seren-loci] auth: "
-          f"{'enabled' if cfg.server.bearer_token else 'DISABLED (no token)'}")
 
     uvicorn.run(app, host=cfg.server.host, port=cfg.server.port, log_level="info")
 
