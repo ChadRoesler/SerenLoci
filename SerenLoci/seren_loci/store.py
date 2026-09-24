@@ -9,14 +9,16 @@ path has three rungs, cheapest first:
                   No embedding, no ranking. You know the address, you get the
                   thing. This is the spine and it runs free.
 
-    2. LEXICAL    FTS5 full-text over (key, value, why) of the LIVE rows. The
-                  "I sort of remember the words" path. Still no vectors, still
-                  floor-cheap.
+    2. LEXICAL    FTS5 full-text over (key, value, why). Live rows by default;
+                  history too when a search asks for it (include_superseded).
+                  The "I sort of remember the words" path. Still no vectors,
+                  still floor-cheap.
 
-    3. VECTOR     (additive) a sqlite-vec index over the live facts, built only
+    3. VECTOR     (additive) a sqlite-vec index over the LIVE facts only, built
                   when storage.embedding_model is set. The "this smells like
                   that CUDA thing" associative jump - find the door when you
-                  don't know the key. The store works fully without it.
+                  don't know the key. The store works fully without it. History
+                  never enters this lane: a retired value is not a door.
 
 THE STRICT SUPERSEDE RULE - enforced by the DATABASE, not by hope:
 
@@ -88,8 +90,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_facts_live
 -- exact-lookup index (covers the live-key get and project scans)
 CREATE INDEX IF NOT EXISTS idx_facts_lookup ON facts(project, key, superseded_at);
 
--- FTS5 lexical index. Regular (content-bearing) so we can read columns back.
--- Kept in lockstep with live rows in set_fact/forget via the bridging rowid.
+-- FTS5 lexical index over EVERY row, live and history, via the bridging rowid.
+-- Liveness is a WHERE clause on the join, not a property of the index, so a
+-- search can opt into history without a second index. (Until 2026-09-23 the
+-- FTS row was deleted on supersede, which made include_superseded a no-op:
+-- accepted, echoed, and unable to find anything. The 'fts_scope' stamp in
+-- loci_meta marks a store whose index has been rebuilt to cover history.)
 CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
     key, value, why,
     content='facts', content_rowid='rowid',
@@ -123,12 +129,31 @@ class LociStore:
         self._conn.execute("PRAGMA foreign_keys=ON;")
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
+        self._reconcile_fts()
 
         # Additive vector finder. None unless an embedder is configured AND the
         # optional deps import cleanly. Everything below degrades to FTS when
         # this is None - the floor never depends on it. Building the finder also
         # reconciles the vector index with the configured embedder (see below).
         self._finder = self._build_finder()
+
+    def _reconcile_fts(self) -> None:
+        """Make sure the FTS index covers history, once per store.
+
+        A store written before 2026-09-23 dropped the FTS row of every value it
+        superseded, so its history is lexically invisible. FTS5's external-
+        content 'rebuild' re-reads the facts table in one statement; Loci is
+        small by design, so this is a boot-time blink, and the stamp means it
+        happens exactly once."""
+        row = self._conn.execute(
+            "SELECT value FROM loci_meta WHERE key='fts_scope'").fetchone()
+        if row is not None and row["value"] == "all":
+            return
+        self._conn.execute("INSERT INTO facts_fts(facts_fts) VALUES('rebuild')")
+        self._conn.execute(
+            "INSERT INTO loci_meta(key, value) VALUES('fts_scope', 'all') "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+        self._conn.commit()
 
     # ──────────────────────────────────────────────────────────────────
     #  finder construction (additive - the ceiling, not the floor)
@@ -195,13 +220,14 @@ class LociStore:
             ).fetchone()
 
             if old is not None:
-                # Stamp it superseded and point it forward. Drop its FTS row so
-                # lexical search only ever sees live facts.
+                # Stamp it superseded and point it forward. Its FTS row STAYS
+                # (history is searchable when asked); its vector goes, because
+                # the vector lane is live-only and a retired value must not
+                # take a KNN seat from a live one.
                 cur.execute(
                     "UPDATE facts SET superseded_at=?, superseded_by=? WHERE rowid=?",
                     (now, fact.id, old["rowid"]),
                 )
-                self._fts_delete(cur, old["rowid"])
                 if self._finder is not None:
                     self._finder.delete(old["rowid"])
 
@@ -245,7 +271,6 @@ class LociStore:
                 "UPDATE facts SET superseded_at=? WHERE rowid=?",
                 (time.time(), old["rowid"]),
             )
-            self._fts_delete(cur, old["rowid"])
             if self._finder is not None:
                 self._finder.delete(old["rowid"])
             self._conn.commit()
@@ -271,9 +296,12 @@ class LociStore:
     def get_history(self, project: str, key: str) -> list[Fact]:
         """Every value this key has ever held, newest first. The audit trail
         the strict-supersede rule preserves."""
+        # rowid breaks ties: three values set inside one clock tick (Windows
+        # time.time() steps in ~15ms) share a created_at and would otherwise
+        # come back in arbitrary order, and "newest first" is the promise.
         rows = self._conn.execute(
             "SELECT * FROM facts WHERE project=? AND key=? "
-            "ORDER BY created_at DESC",
+            "ORDER BY created_at DESC, rowid DESC",
             (project, key),
         ).fetchall()
         return [_row_to_fact(r) for r in rows]
@@ -309,15 +337,25 @@ class LociStore:
           2. FINDER: vector if available, else FTS lexical, over the in-scope
              live facts. Normalized scores, below exact.
           3. merge (exact wins ties by id), sort, trim.
+
+        include_superseded folds HISTORY in: every value the key has held
+        joins the exact rung (below the live one, never above it), and the
+        lexical lane searches retired rows too. The vector lane stays live-only
+        on purpose - a retired value is not a door, and it must not take a KNN
+        seat from a live one. Each hit says which it is via `live`.
         """
-        scopes = self._resolve_scopes(project, include_fundamentals)
+        scopes = self._resolve_scopes(project, include_fundamentals, include_superseded)
         hits: dict[str, SearchHit] = {}  # id -> hit, exact-wins dedupe
 
-        # 1. exact key hit (deterministic, score 1.0)
+        # 1. exact key hit (deterministic, score 1.0); history at 0.9 when asked
         for scope in scopes:
             f = self.get_fact(scope, query)
             if f is not None:
                 hits[f.id] = _hit(f, score=1.0, kind="exact")
+            if include_superseded:
+                for h in self.get_history(scope, query):
+                    if not h.is_live and h.id not in hits:
+                        hits[h.id] = _hit(h, score=_EXACT_HISTORY, kind="exact")
 
         # 2. finder - hybrid (vector + FTS5 fused via RRF) when embedder present,
         #    pure FTS5 lexical otherwise.
@@ -334,9 +372,12 @@ class LociStore:
             # WEAK hit - which is the whole point. (raw_distance, long null on
             # this path, now carries the real vector distance too.)
             for fid, _rrf, distance, bm25_rel in self._finder.search(
-                    query, n_results * 2, scopes):
+                    query, n_results * 2, scopes,
+                    include_superseded=include_superseded):
                 f = self._fact_by_id(fid)
-                if f is None or not _in_scope(f, scopes):
+                if f is None or f.project not in scopes:
+                    continue
+                if not f.is_live and not include_superseded:
                     continue
                 if f.id in hits:
                     continue  # exact already claimed it
@@ -344,7 +385,8 @@ class LociStore:
                 hits[f.id] = _hit(f, score=round(score, 6), kind="hybrid",
                                   raw_distance=distance)
         else:
-            for fid, rel in self._fts_search(query, scopes, n_results * 2):
+            for fid, rel in self._fts_search(query, scopes, n_results * 2,
+                                             include_superseded=include_superseded):
                 f = self._fact_by_id(fid)
                 if f is None or f.id in hits:
                     continue
@@ -364,11 +406,14 @@ class LociStore:
     #  internals
     # ──────────────────────────────────────────────────────────────────
     def _resolve_scopes(self, project: Optional[str],
-                        include_fundamentals: bool) -> list[str]:
+                        include_fundamentals: bool,
+                        include_superseded: bool = False) -> list[str]:
         if project is None:
             # search everything: fundamentals + every project that has facts
+            # (a project that only has history still counts when asked)
+            live = "" if include_superseded else " WHERE superseded_at IS NULL"
             rows = self._conn.execute(
-                "SELECT DISTINCT project FROM facts WHERE superseded_at IS NULL"
+                f"SELECT DISTINCT project FROM facts{live}"
             ).fetchall()
             return [r["project"] for r in rows]
         scopes = [project]
@@ -393,41 +438,12 @@ class LociStore:
             (rowid, key, value, why or ""),
         )
 
-    def _fts_delete(self, cur, rowid: int) -> None:
-        # external-content FTS5 delete idiom: special 'delete' command row
-        cur.execute(
-            "INSERT INTO facts_fts(facts_fts, rowid, key, value, why) "
-            "VALUES('delete', ?, "
-            "(SELECT key FROM facts WHERE rowid=?), "
-            "(SELECT value FROM facts WHERE rowid=?), "
-            "(SELECT COALESCE(why,'') FROM facts WHERE rowid=?))",
-            (rowid, rowid, rowid, rowid),
-        )
-
-    def _fts_search(self, query: str, scopes: list[str],
-                    limit: int) -> list[tuple[str, float]]:
-        """FTS5 MATCH over live facts in scope. Returns (fact_id, relevance)
-        with relevance >= 0 (larger = better). bm25() returns smaller-is-better
-        reals (negative = strong match), so we negate."""
-        if not scopes:
-            return []
-        placeholders = ",".join("?" for _ in scopes)
-        try:
-            rows = self._conn.execute(
-                f"SELECT f.id AS id, -bm25(facts_fts) AS rel "
-                f"FROM facts_fts "
-                f"JOIN facts f ON f.rowid = facts_fts.rowid "
-                f"WHERE facts_fts MATCH ? "
-                f"  AND f.superseded_at IS NULL "
-                f"  AND f.project IN ({placeholders}) "
-                f"ORDER BY rel DESC LIMIT ?",
-                (_fts_query(query), *scopes, limit),
-            ).fetchall()
-        except sqlite3.OperationalError:
-            # malformed MATCH (e.g. user typed bare punctuation) -> no lexical
-            # hits rather than a 500. The exact rung already ran.
-            return []
-        return [(r["id"], max(r["rel"], 0.0)) for r in rows]
+    def _fts_search(self, query: str, scopes: list[str], limit: int,
+                    include_superseded: bool = False) -> list[tuple[str, float]]:
+        """FTS5 MATCH over facts in scope - live only unless asked. Returns
+        (fact_id, relevance) with relevance >= 0 (larger = better). bm25()
+        returns smaller-is-better reals (negative = strong match), so we negate."""
+        return _fts_search(self._conn, query, scopes, limit, include_superseded)
 
     def counts(self) -> dict[str, int]:
         live = self._conn.execute(
@@ -463,11 +479,15 @@ def _hit(f: Fact, score: float, kind: str,
          raw_distance: Optional[float] = None) -> SearchHit:
     return SearchHit(id=f.id, project=f.project, key=f.key, value=f.value,
                      why=f.why, score=score, match_kind=kind,
-                     source=f.source.value, raw_distance=raw_distance)
+                     source=f.source.value, raw_distance=raw_distance,
+                     live=f.is_live, superseded_at=f.superseded_at)
 
 
-def _in_scope(f: Fact, scopes: list[str]) -> bool:
-    return f.is_live and f.project in scopes
+# An exact-key hit on a RETIRED value, when history was asked for. Below the
+# live exact's 1.0 by a margin no lane score is likely to cross, so "what we
+# used to think" never outranks "what we think now" and still leads the fuzzy
+# matches for the same key.
+_EXACT_HISTORY = 0.9
 
 
 def _finder_text(key: str, value: str, why: Optional[str]) -> str:
@@ -539,6 +559,33 @@ _FTS_STOPWORDS = frozenset({
     "this", "to", "was", "were", "what", "when", "where", "which", "who", "whom",
     "whose", "why", "will", "with", "would",
 })
+
+
+def _fts_search(conn: sqlite3.Connection, query: str, scopes: list[str],
+                limit: int, include_superseded: bool = False
+                ) -> list[tuple[str, float]]:
+    """The ONE lexical query, shared by the store and the hybrid finder so the
+    two can never drift on what 'in scope' means."""
+    if not scopes:
+        return []
+    placeholders = ",".join("?" for _ in scopes)
+    live = "" if include_superseded else "  AND f.superseded_at IS NULL "
+    try:
+        rows = conn.execute(
+            f"SELECT f.id AS id, -bm25(facts_fts) AS rel "
+            f"FROM facts_fts "
+            f"JOIN facts f ON f.rowid = facts_fts.rowid "
+            f"WHERE facts_fts MATCH ? "
+            f"{live}"
+            f"  AND f.project IN ({placeholders}) "
+            f"ORDER BY rel DESC LIMIT ?",
+            (_fts_query(query), *scopes, limit),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        # malformed MATCH (e.g. user typed bare punctuation) -> no lexical
+        # hits rather than a 500. The exact rung already ran.
+        return []
+    return [(r["id"], max(r["rel"], 0.0)) for r in rows]
 
 
 def _fts_query(raw: str) -> str:
@@ -694,6 +741,15 @@ def _load_embedder_from_release(
     return SentenceTransformer(str(local_model_dir), device=device)
 
 
+# How many rows the scoped KNN asks vec0 for. Loci is a facts table (hundreds,
+# low thousands), so 'all of them' is the honest answer and brute force over
+# that is sub-millisecond. Past the ceiling the project filter sees only the
+# nearest 10k and a scoped search can miss - acceptable for a store this was
+# never meant to be, and the ceiling exists so a runaway table can't turn every
+# query into a full sort of a million rows.
+_KNN_CEILING = 10_000
+
+
 # ── the additive vector finder ──────────────────────────────────────────────
 
 class _VectorFinder:
@@ -714,9 +770,21 @@ class _VectorFinder:
             different dim vec0's FLOAT[n] can't hold, or it's the FIRST vector
             boot over a store seeded on the floor). DROP it and re-encode every
             live fact from text. Lossless; the facts table is never touched.
-          - stamp matches -> same embedder as last boot. Backfill only the live
+          - stamp matches -> same embedder as last boot. Backfill the live
             facts missing from the index (seeded while the finder was off, or a
-            crash between the fact insert and the vec add). Usually a no-op.
+            crash between the fact insert and the vec add) AND prune rows whose
+            fact was superseded while the finder was off - set_fact/forget can
+            only delete a vector when a finder is there to do it, so a floor
+            boot leaves dead vectors that would otherwise hold KNN seats
+            forever. Usually a no-op.
+
+    SCOPED KNN: sqlite-vec returns the k nearest over the WHOLE index and only
+    then can SQL filter by project. Asking for k=n from a store where another
+    project dominates the neighbourhood returned n rows from the wrong project,
+    filtered them away, and reported nothing - a small project became
+    unsearchable. So the KNN asks for every row (Loci is small by design; see
+    _KNN_CEILING) and the project filter runs before the LIMIT. Brute force
+    over the whole table is what sqlite-vec does anyway, so this costs nothing.
     """
 
     def __init__(self, conn: sqlite3.Connection, model_name: str, device: str,
@@ -772,8 +840,10 @@ class _VectorFinder:
         return len(rows)
 
     def _backfill_missing(self) -> int:
-        """Index any live facts that aren't in facts_vec yet. Same embedder, so
-        existing vectors are still valid - we only add the gaps."""
+        """Bring the index back into lockstep with the LIVE rows: add the live
+        facts that aren't in facts_vec yet, drop the vectors whose fact is no
+        longer live. Same embedder, so existing vectors are still valid.
+        Returns how many were added."""
         rows = self._conn.execute(
             "SELECT rowid, key, value, why FROM facts "
             "WHERE superseded_at IS NULL "
@@ -781,9 +851,18 @@ class _VectorFinder:
         ).fetchall()
         for r in rows:
             self.add(r["rowid"], _finder_text(r["key"], r["value"], r["why"]))
-        if rows:
+        pruned = self._prune_dead()
+        if rows or pruned:
             self._conn.commit()
         return len(rows)
+
+    def _prune_dead(self) -> int:
+        """Delete vectors for facts that are superseded or gone. Returns the
+        count. The index mirrors live rows and nothing else."""
+        cur = self._conn.execute(
+            "DELETE FROM facts_vec WHERE fact_rowid NOT IN "
+            "(SELECT rowid FROM facts WHERE superseded_at IS NULL)")
+        return cur.rowcount
 
     def _read_stamp(self) -> Optional[str]:
         row = self._conn.execute(
@@ -814,16 +893,31 @@ class _VectorFinder:
     def delete(self, rowid: int) -> None:
         self._conn.execute("DELETE FROM facts_vec WHERE fact_rowid=?", (rowid,))
 
-    def search(self, query: str, k: int) -> list[tuple[str, float]]:
-        """KNN -> [(fact_id, distance)]. Joins vec rowid back to the live facts
-        row to return the public id."""
+    def search(self, query: str, k: int,
+               scopes: list[str] | None = None) -> list[tuple[str, float]]:
+        """KNN -> [(fact_id, distance)], nearest first, at most k, all of
+        them live and (when scopes is given) inside those projects.
+
+        The vec0 MATCH returns its k nearest BEFORE SQL sees the join, so the
+        project filter has to run over the whole neighbourhood: we ask vec0 for
+        every row it holds (capped at _KNN_CEILING) and LIMIT after filtering.
+        scopes=None means no project filter; scopes=[] means nothing is in scope."""
+        if scopes is not None and not scopes:
+            return []
+        total = self._conn.execute("SELECT COUNT(*) AS c FROM facts_vec").fetchone()["c"]
+        if total == 0:
+            return []
+        clauses, params = ["f.superseded_at IS NULL"], []
+        if scopes is not None:
+            clauses.append(f"f.project IN ({','.join('?' for _ in scopes)})")
+            params.extend(scopes)
         rows = self._conn.execute(
             "SELECT f.id AS id, v.distance AS distance "
             "FROM facts_vec v JOIN facts f ON f.rowid = v.fact_rowid "
             "WHERE v.embedding MATCH ? AND k = ? "
-            "  AND f.superseded_at IS NULL "
-            "ORDER BY v.distance",
-            (self._encode(query), k),
+            "  AND " + " AND ".join(clauses) + " "
+            "ORDER BY v.distance LIMIT ?",
+            (self._encode(query), min(total, _KNN_CEILING), *params, k),
         ).fetchall()
         return [(r["id"], float(r["distance"])) for r in rows]
 
@@ -856,10 +950,13 @@ class _HybridFinder(_VectorFinder):
     RRF_K: int = 60
 
     def search(self, query: str, k: int,
-               scopes: list[str] | None = None
+               scopes: list[str] | None = None,
+               include_superseded: bool = False,
                ) -> list[tuple[str, float, Optional[float], Optional[float]]]:
         """Hybrid search: FTS5 + vector, RRF-fused for ORDERING, returning the
         absolute per-lane signals so the caller can score by relevance.
+        include_superseded reaches the lexical lane only; the vector index is
+        live by construction.
 
         Returns [(fact_id, rrf_score, vec_distance, bm25_rel)]:
             rrf_score    - reciprocal-rank-fused value. Used ONLY to order and
@@ -879,8 +976,9 @@ class _HybridFinder(_VectorFinder):
             scopes - list of project scopes; passed to FTS5 for filtering
                      and used for scope-aware vector query augmentation.
         """
-        # 1. FTS5 search (scoped) - use the module-level _fts_query helper
-        fts_results = self._fts_search(query, scopes or [], k * 2)
+        # 1. FTS5 search (scoped) - the store's own lexical query
+        fts_results = _fts_search(self._conn, query, scopes or [], k * 2,
+                                  include_superseded)
 
         # 2. Vector search (scoped via query augmentation) - scope-aware
         #    embedding: prepend primary project to the query so the
@@ -910,35 +1008,6 @@ class _HybridFinder(_VectorFinder):
 
     # ── internal helpers ──────────────────────────────────────────────
 
-    def _fts_search(self, query: str, scopes: list[str],
-                    limit: int) -> list[tuple[str, float]]:
-        """FTS5 MATCH over live facts in scope. Returns [(fact_id, bm25_rel)]
-        with rel >= 0 (larger = better).  bm25() returns smaller-is-better
-        reals (negative = strong match), so we negate.
-
-        Identical to LociStore._fts_search - duplicated here so the hybrid
-        finder is self-contained and does not need a store reference.
-        """
-        if not scopes:
-            return []
-        placeholders = ",".join("?" for _ in scopes)
-        try:
-            rows = self._conn.execute(
-                f"SELECT f.id AS id, -bm25(facts_fts) AS rel "
-                f"FROM facts_fts "
-                f"JOIN facts f ON f.rowid = facts_fts.rowid "
-                f"WHERE facts_fts MATCH ? "
-                f"  AND f.superseded_at IS NULL "
-                f"  AND f.project IN ({placeholders}) "
-                f"ORDER BY rel DESC LIMIT ?",
-                (_fts_query(query), *scopes, limit),
-            ).fetchall()
-        except sqlite3.OperationalError:
-            # malformed MATCH (e.g. user typed bare punctuation) -> no
-            # lexical hits rather than a 500.
-            return []
-        return [(r["id"], max(r["rel"], 0.0)) for r in rows]
-
     def _vector_search_augmented(self, query: str, k: int,
                                  scopes: list[str] | None = None
                                  ) -> list[tuple[str, float]]:
@@ -958,5 +1027,6 @@ class _HybridFinder(_VectorFinder):
             augmented = f"{domain[0]}: {query}"
         else:
             augmented = query
-        # parent search encodes the (maybe augmented) query and runs KNN
-        return super().search(augmented, k)
+        # parent search encodes the (maybe augmented) query and runs a KNN
+        # filtered to the scopes BEFORE the limit (see _VectorFinder.search)
+        return super().search(augmented, k, scopes)

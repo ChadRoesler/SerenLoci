@@ -93,7 +93,9 @@ class SearchRequest(BaseModel):
     project: Optional[str] = None
     n_results: int = 10
     include_fundamentals: bool = True   # when project set, also fold cross-project truths
-    include_superseded: bool = False    # history is off by default
+    include_superseded: bool = False    # history is off by default; on, retired values join
+                                        # the exact rung (below the live one) and the lexical
+                                        # lane; the vector lane stays live-only
 
 
 class SearchHit(BaseModel):
@@ -108,13 +110,17 @@ class SearchHit(BaseModel):
     # score the corpus callosum compares against SerenLoci's lane-weighted
     # score, so the merge is apples-to-apples instead of cosine-vs-keyhit.
     score: float
-    match_kind: str                     # "exact" | "lexical" | "vector"
+    match_kind: str                     # "exact" | "hybrid" | "lexical"
     source: Optional[str] = None
-    raw_distance: Optional[float] = None  # vector hits only; None otherwise
+    raw_distance: Optional[float] = None  # hybrid hits with a vector lane; None otherwise
+    # History, when a search asked for it (include_superseded). A live hit is
+    # the current answer; a retired one says so and carries when it retired.
+    live: bool = True
+    superseded_at: Optional[float] = None
 
 
 class SearchResponse(BaseModel):
     query: str
     project: Optional[str]
     hits: list[SearchHit]
-    finder: str                         # "vector" | "lexical" - which discovery path served
+    finder: str                         # "hybrid" | "lexical" - which discovery path served

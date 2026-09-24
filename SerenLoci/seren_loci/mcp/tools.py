@@ -100,7 +100,8 @@ class LociToolImpl:
     # -- read (discovery) -------------------------------------------------
     def search_loci(self, query: str, n_results: int = 10,
                     project: Optional[str] = None,
-                    include_fundamentals: bool = True) -> dict:
+                    include_fundamentals: bool = True,
+                    include_superseded: bool = False) -> dict:
         """Search the left brain when you DON'T know the exact key - the
         associative jump ('that CUDA thing', 'the brace rule').
 
@@ -109,10 +110,14 @@ class LociToolImpl:
         over key/value/why). project=None searches every scope; a concrete
         project narrows to it (and folds in fundamentals unless you turn that
         off). Every hit carries a normalized 0..1 score and a match_kind.
+        include_superseded=true folds history in - every retired value of a
+        matching key, and lexical hits on retired rows - each marked live=false
+        with its superseded_at, and never ranked above the live value.
         """
         hits, finder = self.store.search(
             query, project=project, n_results=n_results,
-            include_fundamentals=include_fundamentals)
+            include_fundamentals=include_fundamentals,
+            include_superseded=include_superseded)
         return {
             "query": query,
             "project": project,
