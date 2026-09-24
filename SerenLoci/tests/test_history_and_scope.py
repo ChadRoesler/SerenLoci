@@ -22,7 +22,16 @@ from __future__ import annotations
 import hashlib
 import math
 
+import importlib.util
+
 import pytest
+
+# The vector lane needs sqlite_vec. Without it Loci falls back to the lexical
+# finder on purpose (a warning, not a failure) - so the tests about the vector
+# lane skip, the way test_hybrid_finder.py does, instead of asserting a lane
+# the box does not have. Seen on CI, 24 Sept 2026: four failures, all this.
+needs_vec = pytest.mark.skipif(importlib.util.find_spec("sqlite_vec") is None,
+                               reason="sqlite_vec not installed: no vector lane")
 
 from seren_loci import store as store_mod
 from seren_loci.config import LociConfig, StorageConfig
@@ -139,6 +148,7 @@ def test_legacy_store_gets_its_history_index_rebuilt_once(tmp_db):
     s.close()
 
 
+@needs_vec
 def test_hybrid_search_reaches_history_lexically_but_not_by_vector(tmp_db):
     s = _open(tmp_db, model="stub-4")
     s.set_fact(FactWrite(key="k", value="first answer", why="w"))
@@ -154,6 +164,7 @@ def test_hybrid_search_reaches_history_lexically_but_not_by_vector(tmp_db):
 
 # ── 2. project-scoped KNN ────────────────────────────────────────────────────
 
+@needs_vec
 def test_knn_finds_a_small_project_behind_a_crowded_one(tmp_db):
     s = _open(tmp_db, model="stub-4")
     for i in range(40):
@@ -168,6 +179,7 @@ def test_knn_finds_a_small_project_behind_a_crowded_one(tmp_db):
     s.close()
 
 
+@needs_vec
 def test_knn_scopes_never_leak_a_project(tmp_db):
     s = _open(tmp_db, model="stub-4")
     s.set_fact(FactWrite(project="a", key="ka", value="alpha", why="w"))
@@ -179,6 +191,7 @@ def test_knn_scopes_never_leak_a_project(tmp_db):
 
 # ── 3. dead vectors ──────────────────────────────────────────────────────────
 
+@needs_vec
 def test_vectors_superseded_on_the_floor_are_pruned_on_the_next_vector_boot(tmp_db):
     s = _open(tmp_db, model="stub-4")
     s.set_fact(FactWrite(key="k", value="v1", why="w"))
