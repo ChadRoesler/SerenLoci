@@ -196,8 +196,11 @@ async function loadOverview() {
             <span class="bar"><i style="width:${Math.round(byProj[p] / max * 100)}%"></i></span>
             <span class="bn">${byProj[p]}</span>
           </div>`).join("") || `<div class="empty">No facts yet - seed the fundamentals.</div>`;
-        document.getElementById("finderNote").innerHTML = root.finder === "vector"
-            ? `Finder: <b style="color:var(--accent)">vector</b> - a sqlite-vec index is live, so the associative jump (“that CUDA thing”) works. Exact-key still leads at score 1.0.`
+        // The server says "hybrid" (vector + FTS5 fused); "vector" is the name an
+        // older build used. The pill went cold on every real deployment because
+        // this compared against the old word only.
+        document.getElementById("finderNote").innerHTML = (root.finder === "hybrid" || root.finder === "vector")
+            ? `Finder: <b style="color:var(--accent)">hybrid</b> - a sqlite-vec index is live beside FTS5, so the associative jump (“that CUDA thing”) works. Exact-key still leads at score 1.0.`
             : `Finder: <b>lexical</b> - embedding-free floor (FTS5 over key/value/why). Set <code>storage.embedding_model</code> to light up the vector finder. Exact-key always leads at 1.0.`;
     } catch (e) { showErr(e.message); }
 }
@@ -210,7 +213,7 @@ function setFinder(finder) {
     const b = document.getElementById("finderBadge");
     if (!b) return;
     b.textContent = `finder: ${finder}`;
-    b.className = "head-pill" + (finder === "vector" ? " hot" : "");
+    b.className = "head-pill" + ((finder === "hybrid" || finder === "vector") ? " hot" : "");
 }
 
 // ---- scope selects ----------------------------------------------------------

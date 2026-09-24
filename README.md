@@ -106,10 +106,20 @@ curl -X POST localhost:7422/search -H 'content-type: application/json' \
 | POST   | `/search`        | Exact + finder discovery, ranked.                      |
 | GET    | `/` `/health`    | Service info / liveness.                               |
 
-Every search hit carries a normalized **0-1 score** (`exact`->1.0,
-`hybrid`->RRF fused into 0..1, `lexical`->bm25 mapped above 0). That's the common
-currency **SerenCorpusCallosum** uses to merge left-brain and right-brain results
-on one axis instead of comparing cosines to key-hits.
+Every search hit carries a normalized **0-1 score**: `exact` is 1.0, `hybrid`
+is the vector lane's `1/(1+distance)` and the lexical lane's squashed bm25 fused
+with a noisy-OR and capped below 1.0 (RRF only *orders* the candidates; it is
+never the emitted score, because a rank-0 in both lanes fuses to the same number
+however weak the match), `lexical` is bm25 mapped into 0.05-1.0. That's the
+common currency **SerenCorpusCallosum** uses to merge left-brain and right-brain
+results on one axis instead of comparing cosines to key-hits. `match_kind` is
+one of `exact`, `hybrid`, `lexical`; `finder` says which path served.
+
+History is searchable when you ask: `include_superseded: true` folds every
+retired value of a matching key into the exact rung (at 0.9, always below the
+live 1.0) and lets the lexical lane see retired rows. The vector lane stays
+live-only on purpose - a retired value is not a door. Each hit carries `live`
+and `superseded_at` so you can tell which is which.
 
 ---
 
