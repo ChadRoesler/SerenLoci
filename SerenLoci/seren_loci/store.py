@@ -57,8 +57,10 @@ WHY THERE'S NO MIGRATION (and Memory has one):
 """
 from __future__ import annotations
 
+import functools
 import json
 import sqlite3
+import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -114,15 +116,35 @@ CREATE TABLE IF NOT EXISTS loci_meta (
 """
 
 
+def _serialized(fn):
+    """Hold the store's lock for the whole call.
+
+    ONE sqlite connection is shared by every thread that reaches the store
+    (FastAPI's worker threads, the MCP tool runner). sqlite serialises
+    separate CONNECTIONS; it does nothing for two threads on one. Two
+    set_fact calls at once died with 'cannot start a transaction within a
+    transaction' (seen live, 25 Sept 2026), and worse was possible: a read
+    on the same connection inside another thread's open transaction sees its
+    uncommitted rows, and one thread's rollback undoes the other's write.
+    The store is small by design, so one lock around it costs nothing."""
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return fn(self, *args, **kwargs)
+    return wrapper
+
+
 class LociStore:
     """Owns the sqlite connection and the three access rungs."""
 
     def __init__(self, config: LociConfig):
         self._config = config
         self._db_path = config.resolved_db_path()
-        # check_same_thread=False: FastAPI may touch the store from a worker
-        # thread. We serialize writes ourselves via the connection's implicit
-        # transaction + a single-writer discipline (sqlite handles the locking).
+        # check_same_thread=False: FastAPI and the MCP runner reach the store
+        # from worker threads. Every public method holds self._lock (see
+        # _serialized) - that lock, not sqlite, is what keeps two threads off
+        # the one connection at the same time.
+        self._lock = threading.RLock()
         self._conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL;")   # readers don't block the writer
@@ -197,6 +219,7 @@ class LociStore:
     # ──────────────────────────────────────────────────────────────────
     #  WRITE - strict supersede
     # ──────────────────────────────────────────────────────────────────
+    @_serialized
     def set_fact(self, w: FactWrite) -> Fact:
         """Set (or replace) the live value for (project, key).
 
@@ -249,6 +272,7 @@ class LociStore:
             raise
         return fact
 
+    @_serialized
     def forget(self, project: str, key: str) -> bool:
         """Retire the live value for a key (supersede with no replacement).
 
@@ -282,6 +306,7 @@ class LociStore:
     # ──────────────────────────────────────────────────────────────────
     #  READ - rung 1: exact deterministic lookup (the spine)
     # ──────────────────────────────────────────────────────────────────
+    @_serialized
     def get_fact(self, project: str, key: str) -> Optional[Fact]:
         """The live value for (project, key), or None. Deterministic - no
         ranking, no embedding. This is what makes Loci a logic store: you
@@ -293,6 +318,7 @@ class LociStore:
         ).fetchone()
         return _row_to_fact(row) if row else None
 
+    @_serialized
     def get_history(self, project: str, key: str) -> list[Fact]:
         """Every value this key has ever held, newest first. The audit trail
         the strict-supersede rule preserves."""
@@ -306,6 +332,7 @@ class LociStore:
         ).fetchall()
         return [_row_to_fact(r) for r in rows]
 
+    @_serialized
     def list_facts(self, project: Optional[str] = None,
                    include_superseded: bool = False) -> list[Fact]:
         """All live facts, optionally scoped to a project. For the viewer and
@@ -326,6 +353,7 @@ class LociStore:
     # ──────────────────────────────────────────────────────────────────
     #  READ - rungs 2 & 3: discovery (search)
     # ──────────────────────────────────────────────────────────────────
+    @_serialized
     def search(self, query: str, project: Optional[str] = None,
                n_results: int = 10, include_fundamentals: bool = True,
                include_superseded: bool = False) -> tuple[list[SearchHit], str]:
@@ -445,6 +473,7 @@ class LociStore:
         returns smaller-is-better reals (negative = strong match), so we negate."""
         return _fts_search(self._conn, query, scopes, limit, include_superseded)
 
+    @_serialized
     def counts(self) -> dict[str, int]:
         live = self._conn.execute(
             "SELECT COUNT(*) c FROM facts WHERE superseded_at IS NULL"
@@ -455,6 +484,7 @@ class LociStore:
         ).fetchone()["c"]
         return {"live": live, "history": total - live, "projects": projects}
 
+    @_serialized
     def close(self) -> None:
         try:
             self._conn.commit()
