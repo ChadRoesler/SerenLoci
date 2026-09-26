@@ -881,9 +881,12 @@ class _VectorFinder:
         ).fetchall()
         for r in rows:
             self.add(r["rowid"], _finder_text(r["key"], r["value"], r["why"]))
-        pruned = self._prune_dead()
-        if rows or pruned:
-            self._conn.commit()
+        self._prune_dead()
+        # ALWAYS commit. The DELETE opens a transaction in Python's sqlite3
+        # even when it removes nothing, and committing only on a change left a
+        # clean boot holding it: the first set_fact's BEGIN then failed with
+        # 'cannot start a transaction within a transaction' (26 Sept 2026).
+        self._conn.commit()
         return len(rows)
 
     def _prune_dead(self) -> int:

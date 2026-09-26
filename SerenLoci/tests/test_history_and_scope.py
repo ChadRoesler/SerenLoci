@@ -209,3 +209,22 @@ def test_vectors_superseded_on_the_floor_are_pruned_on_the_next_vector_boot(tmp_
     assert _vec_rowids(s) == live, "the index mirrors live rows and nothing else"
     assert len(live) == 1
     s.close()
+
+
+@needs_vec
+def test_a_clean_vector_boot_leaves_no_transaction_open(tmp_db):
+    """Seen live 26 Sept 2026: the FIRST set_fact after every restart of the
+    wren Loci failed with 'cannot start a transaction within a transaction',
+    and the retry worked. The boot's backfill ran _prune_dead's DELETE (which
+    opens a transaction in Python's sqlite3 even when it deletes nothing) and
+    committed only if something was added or pruned - so a clean boot handed
+    the first write a connection already inside a transaction."""
+    s = _open(tmp_db, model="m")
+    s.set_fact(FactWrite(project="p", key="k", value="v"))
+    s.close()
+    s = _open(tmp_db, model="m")                 # same embedder: the backfill path, nothing to do
+    try:
+        assert not s._conn.in_transaction, "boot left a transaction open"
+        s.set_fact(FactWrite(project="p", key="k2", value="v2"))   # raised before the fix
+    finally:
+        s.close()
