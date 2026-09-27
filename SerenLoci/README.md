@@ -167,4 +167,4 @@ PYTHONPATH=/path/to/vector-venv/lib/python3.12/site-packages pytest tests/  # al
 - **SerenLoci** - *this*. The left brain. Keyed facts, deterministic, strict-supersede.
 - **SerenCorpusCallosum** - fans a query across both hemispheres and merges on the shared score currency.
 
-Build for the floor, not the ceiling. The Nano is the floor, not the cap. GPL-3.0-or-later. Rip it and win.
+Build for the floor, not the ceiling. The Nano is the floor, not the cap. AGPL-3.0-or-later. Rip it and win.
