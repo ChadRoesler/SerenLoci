@@ -7,14 +7,12 @@ name = "seren-loci"
 dynamic = ["version"]
 description = "Keyed facts/logic memory for Seren. The left brain - addressable, deterministic, one live value per key."
 readme = "README.md"
-# Upper bound mirrors SerenMemory, but the REASON differs: Loci's floor (exact
-# + FTS5) is pure sqlite + the web stack and would run fine anywhere. The cap
-# exists for the OPTIONAL [vector] extra - sentence-transformers pulls torch,
-# and torch's 3.13 wheel gap is the wall. Capping here keeps `pip install
-# seren-loci[vector]` resolving cleanly instead of exploding on a torch build.
-# LIFT THE <3.13 the day torch ships 3.13 wheels (bump the CI matrix to match
-# in the same commit).
-requires-python = ">=3.10,<3.13"
+# No upper bound. There was a <3.13 for the [vector] extra (torch had no 3.13
+# wheels); lifted 27 Sept 2026 once torch shipped 3.13 and 3.14 wheels - the
+# whole suite, vector lane included, passes on 3.14 with every extra, and the
+# CI matrix runs through 3.14. If a new Python breaks an extra again, cap it
+# with the reason here and lift it the same way.
+requires-python = ">=3.10"
 license = { text = "AGPL-3.0-or-later" }
 authors = [{ name = "Chad Roesler" }]
 keywords = ["llm", "memory", "facts", "logic", "sqlite", "sqlite-vec", "seren"]
