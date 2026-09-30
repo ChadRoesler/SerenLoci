@@ -102,8 +102,16 @@ class LociToolImpl:
                     project: Optional[str] = None,
                     include_fundamentals: bool = True,
                     include_superseded: bool = False) -> dict:
-        """Search the left brain when you DON'T know the exact key - the
-        associative jump ('that CUDA thing', 'the brace rule').
+        """Search the left brain alone, when you DON'T know the exact key -
+        the associative jump ('that CUDA thing', 'the brace rule').
+
+        WHEN A CORPUS CALLOSUM IS CONNECTED, ITS `search` COMES FIRST: one
+        call reaches these facts AND the right brain's episodic memory,
+        merged and ranked - a fuller picture for fewer tokens than calling
+        here and `recall` both. Reach for `search_loci` when you specifically
+        want only facts: a project's conventions, a key you half remember,
+        the history of a value. With no callosum installed, this is the
+        left brain's retrieval path.
 
         An exact key match leads at score 1.0; otherwise the finder runs
         (semantic vector search if an embedder is configured, else FTS5 lexical
