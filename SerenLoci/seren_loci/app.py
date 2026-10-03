@@ -73,6 +73,32 @@ def create_app(config: LociConfig | None = None) -> FastAPI:
         log.info(f"[seren-loci] store ready at {cfg.resolved_db_path()}")
         log.info(f"[seren-loci] facts: {store.counts()} | finder: {store.finder_kind}")
 
+        # What this service keeps, and snapshots of it on its own schedule
+        # (seren_sinew.stores). The embedding model beside the database is a
+        # download: declared, never copied.
+        from seren_sinew.stores import Store, StoreKeeper, snapshot_loop
+
+        def _facts_export() -> dict:
+            rows = store.list_facts(include_superseded=True)
+            return {"facts.jsonl": [f.model_dump() if hasattr(f, "model_dump") else dict(vars(f)) for f in rows]}
+
+        app.state.stores = StoreKeeper(
+            "seren-loci",
+            lambda: [Store("facts", "sqlite", str(cfg.resolved_db_path()),
+                           "every fact and its history (superseded values included), and the search indexes"),
+                     Store("models", "dir", str(cfg.resolved_model_cache_path()),
+                           "the embedding model's downloaded weights", backed_up=False)],
+            cfg.resolved_backup_dir(), export=_facts_export,
+            extra=lambda: {"version": APP_VERSION, "embedder": cfg.storage.embedding_model,
+                           "counts": store.counts(), "finder": store.finder_kind},
+            keep_daily=cfg.backup.keep_daily, keep_weekly=cfg.backup.keep_weekly,
+            log=lambda m: log.info(f"[seren-loci] {m}")) if cfg.backup.enabled else None
+        _snap_task = None
+        if app.state.stores is not None and cfg.backup.every_hours > 0:
+            import asyncio
+            _snap_task = asyncio.create_task(snapshot_loop(lambda: app.state.stores, cfg.backup.every_hours))
+            log.info(f"[seren-loci] snapshots every {cfg.backup.every_hours:g}h into {app.state.stores.root}")
+
         # -- Optional MCP server --
         # Mounted ONLY if the [mcp] extra is installed AND the mcp surface
         # module exists. Same shape as SerenMemory: a missing package (or, for
@@ -100,6 +126,8 @@ def create_app(config: LociConfig | None = None) -> FastAPI:
             yield
 
         # -- Shutdown --
+        if _snap_task is not None:
+            _snap_task.cancel()
         try:
             app.state.store.close()
         except Exception:  # noqa: BLE001
@@ -143,6 +171,11 @@ def create_app(config: LociConfig | None = None) -> FastAPI:
                 getattr(request.app.state, "updates", None),
                 distribution="seren-loci", installed=APP_VERSION),
         }
+
+    # GET /stores, POST /stores/snapshot, GET /stores/snapshots - behind the
+    # same bearer as every other route. The keeper is built at startup.
+    from seren_sinew.stores import add_store_routes
+    add_store_routes(app, lambda: getattr(app.state, "stores", None))
 
     @app.get("/health")
     async def health():
