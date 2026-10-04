@@ -106,3 +106,27 @@ def test_a_rehearsal_opens_a_copy_and_counts_it(app_client):
     assert rep["ok"] and rep["dry_run"] and rep["check"]["counts"]["live"] == 1 and rep["check"]["counts"]["history"] == 1, rep
     assert rep["sqlite"] == [{"file": "facts/loci.db", "integrity": "ok"}] and rep["live_store_touched"] is False
     assert app_client.app.state.store.counts()["live"] == 2, "the live database kept what came after"
+
+
+def test_a_new_box_restores_at_startup_and_a_full_one_is_left_alone(app_client, tmp_path):
+    """backup.restore_from + restore_reason, into an empty store only
+    (seren_sinew.stores.restore_at_startup). 3 Oct 2026."""
+    from fastapi.testclient import TestClient
+    from seren_loci.app import create_app
+    from seren_sinew.stores import RestoreRefused
+    app_client.post("/fact", json={"key": "indent", "value": "tabs", "why": "makefiles need them"})
+    app_client.post("/fact", json={"key": "indent", "value": "spaces", "why": "changed our mind"})
+    snap = app_client.post("/stores/snapshot").json()["snapshot"]
+
+    def cfg(where, **backup):
+        return LociConfig(storage=StorageConfig(db_path=str(tmp_path / where / "facts.db"), embedding_model=None),
+                          backup=BackupConfig(every_hours=0, restore_from=snap["path"], **backup))
+    with TestClient(create_app(cfg("new", restore_reason="moving to the cluster"))) as c:
+        assert "spaces" in c.get("/fact", params={"key": "indent"}).text
+        assert c.app.state.store.counts() == {"live": 1, "history": 1, "projects": 1}
+        c.post("/fact", json={"key": "port", "value": "7200"})
+    with TestClient(create_app(cfg("new", restore_reason="moving to the cluster"))) as c:
+        assert c.app.state.store.counts()["live"] == 2, "the second start passes the key by: nothing is overwritten"
+    with pytest.raises(RestoreRefused, match="asked for with a reason"):
+        with TestClient(create_app(cfg("other"))):
+            pass

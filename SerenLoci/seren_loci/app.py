@@ -68,6 +68,15 @@ def create_app(config: LociConfig | None = None) -> FastAPI:
     async def lifespan(app: FastAPI):
         # -- Startup --
         app.state.config = cfg
+        # A restore, when the config asks for one (backup.restore_from +
+        # restore_reason): into an empty store only, before the store opens.
+        # Refused = the service does not start. No route does this.
+        if (cfg.backup.restore_from or "").strip():
+            from seren_sinew.stores import Store as _Store, restore_at_startup
+            restore_at_startup("seren-loci", [_Store("facts", "sqlite", str(cfg.resolved_db_path()))],
+                               cfg.backup.restore_from, cfg.backup.restore_reason,
+                               cfg.resolved_backup_dir() / "seren-loci",
+                               log=lambda m: log.warning(f"[seren-loci] {m}"))
         # warm_in_background: listen now, on the lexical floor; the embedder
         # (tens of seconds to import) arrives behind the door. See LociStore.
         store = LociStore(cfg, warm_in_background=True)
