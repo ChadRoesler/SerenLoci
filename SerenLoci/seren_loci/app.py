@@ -68,10 +68,12 @@ def create_app(config: LociConfig | None = None) -> FastAPI:
     async def lifespan(app: FastAPI):
         # -- Startup --
         app.state.config = cfg
-        store = LociStore(cfg)
+        # warm_in_background: listen now, on the lexical floor; the embedder
+        # (tens of seconds to import) arrives behind the door. See LociStore.
+        store = LociStore(cfg, warm_in_background=True)
         app.state.store = store
         log.info(f"[seren-loci] store ready at {cfg.resolved_db_path()}")
-        log.info(f"[seren-loci] facts: {store.counts()} | finder: {store.finder_kind}")
+        log.info(f"[seren-loci] facts: {store.counts()} | finder: {store.finder_kind} ({store.finder_state})")
 
         # What this service keeps, and snapshots of it on its own schedule
         # (seren_sinew.stores). The embedding model beside the database is a
@@ -82,13 +84,34 @@ def create_app(config: LociConfig | None = None) -> FastAPI:
             rows = store.list_facts(include_superseded=True)
             return {"facts.jsonl": [f.model_dump() if hasattr(f, "model_dump") else dict(vars(f)) for f in rows]}
 
+        def _facts_check(restored, manifest, snapshot_dir) -> dict:
+            """A rehearsal's look at a restored COPY of the database: the
+            same counts counts() makes, read-only, against the manifest and
+            the export. (Loci has no purge: a forgotten fact is superseded,
+            and its history is in the snapshot like everything else.)"""
+            import sqlite3
+            f = restored["facts"] / cfg.resolved_db_path().name
+            con = sqlite3.connect(f"file:{f.as_posix()}?mode=ro", uri=True)
+            try:
+                live = con.execute("SELECT COUNT(*) FROM facts WHERE superseded_at IS NULL").fetchone()[0]
+                total = con.execute("SELECT COUNT(*) FROM facts").fetchone()[0]
+                projects = con.execute(
+                    "SELECT COUNT(DISTINCT project) FROM facts WHERE superseded_at IS NULL").fetchone()[0]
+            finally:
+                con.close()
+            problems = []
+            exported = (manifest.get("exports") or {}).get("facts.jsonl")
+            if exported is not None and exported != total:
+                problems.append(f"the export has {exported} facts, the restored database holds {total}")
+            return {"counts": {"live": live, "history": total - live, "projects": projects}, "problems": problems}
+
         app.state.stores = StoreKeeper(
             "seren-loci",
             lambda: [Store("facts", "sqlite", str(cfg.resolved_db_path()),
                            "every fact and its history (superseded values included), and the search indexes"),
                      Store("models", "dir", str(cfg.resolved_model_cache_path()),
                            "the embedding model's downloaded weights", backed_up=False)],
-            cfg.resolved_backup_dir(), export=_facts_export,
+            cfg.resolved_backup_dir(), export=_facts_export, check=_facts_check,
             extra=lambda: {"version": APP_VERSION, "embedder": cfg.storage.embedding_model,
                            "counts": store.counts(), "finder": store.finder_kind},
             keep_daily=cfg.backup.keep_daily, keep_weekly=cfg.backup.keep_weekly,
@@ -167,6 +190,7 @@ def create_app(config: LociConfig | None = None) -> FastAPI:
             "version": APP_VERSION,
             "counts": store.counts(),
             "finder": store.finder_kind,
+            "finder_state": store.finder_state,
             "updates": await updates_payload(
                 getattr(request.app.state, "updates", None),
                 distribution="seren-loci", installed=APP_VERSION),
@@ -178,8 +202,11 @@ def create_app(config: LociConfig | None = None) -> FastAPI:
     add_store_routes(app, lambda: getattr(app.state, "stores", None))
 
     @app.get("/health")
-    async def health():
-        return {"ok": True, "ts": time.time()}
+    async def health(request: Request):
+        store = getattr(request.app.state, "store", None)
+        return {"ok": True, "ts": time.time(), "version": APP_VERSION,
+                "finder": store.finder_kind if store else None,
+                "finder_state": store.finder_state if store else None}
 
     try:
         from seren_meninges.updates import UpdateChecker

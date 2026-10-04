@@ -261,3 +261,40 @@ def test_build_finder_returns_none_on_import_error(monkeypatch, tmp_db):
     assert kind == "lexical"
     assert len(hits) > 0, "FTS5 should find the seeded fact"
     s.close()
+
+
+# ── the store listens before the embedder has loaded ─────────────────────────
+
+def test_a_background_warm_up_serves_lexical_then_turns_hybrid(tmp_db, monkeypatch):
+    """3 Oct 2026: importing the embedder took 34 s, and Loci did not listen
+    until it had; an MCP client gave up reconnecting. The service now opens
+    the store with warm_in_background: usable at once, hybrid when loaded,
+    and what was written in between is indexed."""
+    import threading
+    gate = threading.Event()
+
+    def slow(name, device, cache_folder=None):
+        gate.wait(10)
+        return _StubEmbedder(name)
+    monkeypatch.setattr(store_mod, "_load_embedder", slow)
+    cfg = LociConfig(storage=StorageConfig(db_path=tmp_db, embedding_model="stub-4"))
+    s = LociStore(cfg, warm_in_background=True)
+    assert s.finder_kind == "lexical" and s.finder_state == "warming"
+    s.set_fact(FactWrite(key="early", value="written before the embedder arrived", why="warm-up"))
+    hits, kind = s.search("embedder arrived")
+    assert kind == "lexical" and [h.key for h in hits] == ["early"]
+    gate.set()
+    assert s.wait_for_finder(10) and s.finder_kind == "hybrid" and s.finder_state == "ready"
+    assert s._conn.execute("SELECT COUNT(*) FROM facts_vec").fetchone()[0] == 1, "the early fact was backfilled"
+    s.close()
+
+
+def test_a_warm_up_that_fails_leaves_the_floor(tmp_db, monkeypatch):
+    def boom(name, device, cache_folder=None):
+        raise RuntimeError("no torch here")
+    monkeypatch.setattr(store_mod, "_load_embedder", boom)
+    s = LociStore(LociConfig(storage=StorageConfig(db_path=tmp_db, embedding_model="stub-4")), warm_in_background=True)
+    assert s.wait_for_finder(10) is False and s.finder_kind == "lexical" and s.finder_state == "failed"
+    s.set_fact(FactWrite(key="k", value="still works", why="the floor"))
+    s.close()
+    assert LociStore(LociConfig(storage=StorageConfig(db_path=tmp_db, embedding_model=None))).finder_state == "off"

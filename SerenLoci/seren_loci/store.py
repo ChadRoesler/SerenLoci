@@ -137,7 +137,7 @@ def _serialized(fn):
 class LociStore:
     """Owns the sqlite connection and the three access rungs."""
 
-    def __init__(self, config: LociConfig):
+    def __init__(self, config: LociConfig, warm_in_background: bool = False):
         self._config = config
         self._db_path = config.resolved_db_path()
         # check_same_thread=False: FastAPI and the MCP runner reach the store
@@ -157,7 +157,62 @@ class LociStore:
         # optional deps import cleanly. Everything below degrades to FTS when
         # this is None - the floor never depends on it. Building the finder also
         # reconciles the vector index with the configured embedder (see below).
-        self._finder = self._build_finder()
+        #
+        # warm_in_background (the service passes it): the store is usable at
+        # once on the lexical floor and the finder arrives when the embedder
+        # has loaded. Importing sentence-transformers alone was measured at
+        # 34 s on the desktop (3 Oct 2026), and a service that does not listen
+        # for that long outlasts an MCP client's reconnect attempts: after
+        # every restart Loci's tools were gone until reconnected by hand.
+        # Facts written meanwhile are picked up by the finder's backfill.
+        self._finder: Optional["_HybridFinder"] = None
+        self._closed = False
+        self._warm_error: Optional[str] = None
+        self._warming: Optional[threading.Thread] = None
+        if warm_in_background and self._config.storage.embedding_model:
+            self._warming = threading.Thread(target=self._warm_finder, name="loci-finder-warm", daemon=True)
+            self._warming.start()
+        else:
+            self._finder = self._build_finder()
+
+    def _warm_finder(self) -> None:
+        """Load the embedder off the lock (the slow part), then build the
+        finder on it. A failure leaves the lexical floor, as _build_finder's
+        does."""
+        import logging
+        logger = logging.getLogger("seren_loci")
+        t0 = time.time()
+        try:
+            st = self._config.storage
+            model = _load_embedder(st.embedding_model, st.embedding_device,
+                                   cache_folder=str(self._config.resolved_model_cache_path()))
+            with self._lock:
+                if self._closed:
+                    return
+                self._finder = _HybridFinder(self._conn, st.embedding_model, st.embedding_device,
+                                             cache_folder=str(self._config.resolved_model_cache_path()), model=model)
+            logger.info("[seren-loci] finder: hybrid, ready after %.1fs", time.time() - t0)
+        except Exception as e:  # noqa: BLE001 - the floor never depends on the finder
+            self._warm_error = f"{type(e).__name__}: {e}"
+            logger.warning("hybrid finder disabled (%s) - staying lexical", self._warm_error)
+
+    @property
+    def finder_state(self) -> str:
+        """ready | warming | failed | off - why the finder is or is not there."""
+        if self._finder is not None:
+            return "ready"
+        if self._warming is not None and self._warming.is_alive():
+            return "warming"
+        if self._warm_error:
+            return "failed"
+        return "off"
+
+    def wait_for_finder(self, timeout: Optional[float] = None) -> bool:
+        """Block until a background warm-up has finished; True when the
+        finder is there."""
+        if self._warming is not None:
+            self._warming.join(timeout)
+        return self._finder is not None
 
     def _reconcile_fts(self) -> None:
         """Make sure the FTS index covers history, once per store.
@@ -486,6 +541,7 @@ class LociStore:
 
     @_serialized
     def close(self) -> None:
+        self._closed = True                                # a warm-up still loading must not build on a closed connection
         try:
             self._conn.commit()
         except Exception:  # noqa: BLE001
@@ -818,11 +874,13 @@ class _VectorFinder:
     """
 
     def __init__(self, conn: sqlite3.Connection, model_name: str, device: str,
-                 cache_folder: str | None = None):
+                 cache_folder: str | None = None, model: Any = None):
         import sqlite_vec  # raises if the optional dep isn't installed
 
         self._conn = conn
-        self._model = _load_embedder(model_name, device, cache_folder=cache_folder)
+        # model: one already loaded (LociStore's background warm-up loads it
+        # off the store's lock)
+        self._model = model if model is not None else _load_embedder(model_name, device, cache_folder=cache_folder)
         self._dim = self._model.get_sentence_embedding_dimension()
 
         conn.enable_load_extension(True)

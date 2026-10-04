@@ -91,3 +91,18 @@ def test_no_route_restores_or_deletes_a_snapshot(app_client):
         assert app_client.post(path).status_code in (404, 405)
         assert app_client.delete(path).status_code in (404, 405)
     assert app_client.get("/stores/snapshots").json()["count"] == 1
+
+
+def test_a_rehearsal_opens_a_copy_and_counts_it(app_client):
+    """A restore's dry run (seren_sinew.stores): the copy is counted against
+    the manifest and the export, and the live database is not touched."""
+    app_client.post("/fact", json={"key": "indent", "value": "tabs", "why": "makefiles need them"})
+    app_client.post("/fact", json={"key": "indent", "value": "spaces", "why": "changed our mind"})
+    sid = app_client.post("/stores/snapshot").json()["snapshot"]["id"]
+    app_client.post("/fact", json={"key": "port", "value": "7200"})          # after the snapshot
+    r = app_client.post(f"/stores/snapshots/{sid}/rehearse")
+    assert r.status_code == 200, r.text
+    rep = r.json()
+    assert rep["ok"] and rep["dry_run"] and rep["check"]["counts"]["live"] == 1 and rep["check"]["counts"]["history"] == 1, rep
+    assert rep["sqlite"] == [{"file": "facts/loci.db", "integrity": "ok"}] and rep["live_store_touched"] is False
+    assert app_client.app.state.store.counts()["live"] == 2, "the live database kept what came after"
