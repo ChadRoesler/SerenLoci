@@ -49,7 +49,7 @@ dependencies = [
     "seren-meninges>=2.4.0,<3",
     # Shared request logging - one copy across the family (SerenSinew). Mounted
     # outermost (before auth) so even 401s get logged. -> loci-requests.log.
-    "seren-sinew>=1.7.0,<2",   # 1.7.0: seren_sinew.stores (snapshots)
+    "seren-sinew>=1.10.0,<2",  # 1.10.0: seren_sinew.stores with the rehearsal and restore_at_startup
 ]
 
 [project.optional-dependencies]
