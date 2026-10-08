@@ -106,7 +106,7 @@ def test_exact_history_sits_below_the_live_exact(tmp_db):
 
 def test_a_forgotten_fact_is_history_too(tmp_db):
     s = _open(tmp_db)
-    s.set_fact(FactWrite(key="old_proxy", value="squid on the nuc", why="pre-corp"))
+    s.set_fact(FactWrite(key="old_proxy", value="squid on the gateway", why="pre-corp"))
     assert s.forget("*", "old_proxy")
     assert s.search("squid")[0] == []
     hits, _ = s.search("squid", include_superseded=True)
