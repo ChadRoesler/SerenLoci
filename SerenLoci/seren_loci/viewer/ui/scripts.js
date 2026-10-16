@@ -33,6 +33,73 @@ function relAge(ts) {
     return Math.round(s / 86400) + "d ago";
 }
 
+// ---- figures: the exhibits a fact cites ------------------------------------
+// A picture can't ride in an <img src> here: the browser sends no bearer with
+// it. So each thumbnail is fetched through the token (apiBlob) and shown from
+// an object URL. Only still pictures are shown; a clip, a sound or a PDF is a
+// chip saying what it is and how big. 15 Oct 2026.
+const STILL = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+async function apiBlob(path) {
+    const headers = {};
+    const tok = getToken();
+    if (tok) headers["Authorization"] = "Bearer " + tok;
+    const res = await fetch(path, { headers });
+    if (!res.ok) throw new Error(res.status + " " + res.statusText);
+    return URL.createObjectURL(await res.blob());
+}
+function human(n) {
+    n = Number(n || 0);
+    for (const u of ["B", "KB", "MB", "GB"]) { if (n < 1024 || u === "GB") return (u === "B" ? n : n.toFixed(1)) + " " + u; n /= 1024; }
+}
+function figuresStrip(f) {
+    const figs = f.figures || [];
+    if (!figs.length) return "";
+    const qs = `?project=${encodeURIComponent(f.project)}&key=${encodeURIComponent(f.key)}`;
+    return `<div class="figs">` + figs.map(g => {
+        const title = escapeHtml(g.caption || g.file || "");
+        if (STILL.has(g.mime)) {
+            return `<figure class="fig" title="${title}"><img alt="${title}" data-fig="/fact/figures/${encodeURIComponent(g.digest)}${qs}"><figcaption>${title}</figcaption></figure>`;
+        }
+        return `<span class="fig chip" title="${title}">${escapeHtml((g.mime || "file").split("/")[0])} · ${human(g.bytes)}</span>`;
+    }).join("") + `</div>`;
+}
+function hydrateFigures(root) {
+    root.querySelectorAll("img[data-fig]").forEach(async img => {
+        const path = img.dataset.fig;
+        img.removeAttribute("data-fig");
+        try { img.src = await apiBlob(path); img.classList.add("ready"); }
+        catch (e) { img.replaceWith(Object.assign(document.createElement("span"), { className: "fig chip", textContent: "picture missing" })); }
+    });
+}
+
+// ---- backups: the same panel on every Seren viewer --------------------------
+// Reads /stores (seren_sinew.stores): what is kept, the snapshots, when a
+// Lodestar last pulled, how the last rehearsal went. Counts and times only.
+// Kept parallel with Memory's and Margin's copy on purpose: fix one, fix all.
+function renderBackups(el, d) {
+    if (!d || !d.ok) { el.innerHTML = `<div class="empty">this service keeps no snapshots (backup.enabled is off)</div>`; return; }
+    const s = d.snapshots || {};
+    const latest = s.latest ? `${escapeHtml(s.latest.id)} · ${relAge(s.latest.created_at)} · ${escapeHtml(s.latest.reason || "")}` : "none yet";
+    const pull = s.last_pull ? `${relAge(s.last_pull.created_at)} (${escapeHtml(s.last_pull.id)})` : "never from this box";
+    const r = d.last_rehearsal;
+    const reh = r ? `<span class="${r.ok ? "ok" : "bad"}">${r.ok ? "ok" : "FAILED"}</span> · ${relAge(r.at)} · ${escapeHtml(r.snapshot)} (${escapeHtml(r.source)}${r.problems ? `, ${r.problems} problem${r.problems === 1 ? "" : "s"}` : ""})`
+                  : "none since this process started";
+    const stores = (d.stores || []).map(st =>
+        `<div class="row"><span class="k">${escapeHtml(st.name)}</span><span class="v">${escapeHtml(st.kind)} · ${human(st.bytes)}${st.backed_up ? "" : " · not copied"}${st.exists ? "" : " · nothing on disk yet"}</span></div>`).join("");
+    el.innerHTML = `
+      <div class="row"><span class="k">snapshots</span><span class="v">${s.count ?? 0} kept · newest ${s.keep_daily} daily, then one a week for ${s.keep_weekly} weeks</span></div>
+      <div class="row"><span class="k">newest</span><span class="v">${latest}</span></div>
+      <div class="row"><span class="k">last pull</span><span class="v">${pull}</span></div>
+      <div class="row"><span class="k">last rehearsal</span><span class="v">${reh}</span></div>
+      ${stores}`;
+}
+async function loadBackups() {
+    const el = document.getElementById("backups");
+    if (!el) return;
+    try { renderBackups(el, await api("/stores")); }
+    catch (e) { el.innerHTML = `<div class="empty">${escapeHtml(e.message)}</div>`; }
+}
+
 // ---- facts hall -------------------------------------------------------------
 async function loadFacts() {
     clearErr();
@@ -81,16 +148,21 @@ function renderFacts() {
     });
     el.innerHTML = html;
     el.querySelectorAll("[data-hk]").forEach(b => b.onclick = () => gotoHistory(b.dataset.hp, b.dataset.hk));
+    hydrateFigures(el);
 }
 
 function factCard(f) {
     const dim = f.superseded_at ? " dim" : "";
     const why = f.why ? `<div class="why"><b>why</b> · ${escapeHtml(f.why)}</div>` : "";
     const supTag = f.superseded_at ? `<span class="tag superseded">superseded</span>` : "";
+    // a superseded row's figures are history: the live value's are served, the rest are counted
+    const figs = f.superseded_at ? (f.figures && f.figures.length ? `<div class="figs"><span class="fig chip">${f.figures.length} figure${f.figures.length === 1 ? "" : "s"} in history</span></div>` : "")
+                                 : figuresStrip(f);
     return `<div class="card${dim}">
         <div class="k">${escapeHtml(f.key)}</div>
         <div class="v">${escapeHtml(f.value)}</div>
         ${why}
+        ${figs}
         <div class="foot">
           <span class="tag">${escapeHtml(f.source || "user")}</span>
           ${supTag}
@@ -128,6 +200,7 @@ function hitRow(h) {
     const pct = Math.round((h.score || 0) * 100);
     const why = h.why ? `<div class="why"><b>why</b> · ${escapeHtml(h.why)}</div>` : "";
     const dist = (h.raw_distance != null) ? ` · d=${h.raw_distance}` : "";
+    const figs = h.figures ? ` · ${h.figures} figure${h.figures === 1 ? "" : "s"}` : "";
     return `<div class="card"><div class="hit">
         <div class="score">
           <span class="num">${(h.score ?? 0).toFixed(2)}</span>
@@ -137,7 +210,7 @@ function hitRow(h) {
           <div class="k">${escapeHtml(h.key)}</div>
           <div class="v">${escapeHtml(h.value)}</div>
           ${why}
-          <div class="foot"><span>${escapeHtml(h.project)}</span><span>${pct}%${dist}</span></div>
+          <div class="foot"><span>${escapeHtml(h.project)}</span><span>${pct}%${dist}${figs}</span></div>
         </div>
       </div></div>`;
 }
@@ -164,12 +237,16 @@ async function runHistory() {
             const tag = live ? `<span class="tag" style="color:var(--accent);border-color:var(--accent-dim)">live</span>`
                 : `<span class="tag superseded">superseded</span>`;
             const why = f.why ? `<div class="why"><b>why</b> · ${escapeHtml(f.why)}</div>` : "";
+            const figs = live ? figuresStrip(f)
+                : (f.figures && f.figures.length ? `<div class="figs"><span class="fig chip">${f.figures.length} figure${f.figures.length === 1 ? "" : "s"} kept with this value</span></div>` : "");
             return `<div class="card${live ? "" : " dim"}">
             <div class="foot" style="margin:0 0 8px"><span>#${data.count - i}</span>${tag}<span>${relAge(f.created_at)}</span></div>
             <div class="v">${escapeHtml(f.value)}</div>
             ${why}
+            ${figs}
           </div>`;
         }).join("");
+        hydrateFigures(el);
     } catch (e) { el.innerHTML = ""; showErr(e.message); }
 }
 
@@ -181,8 +258,10 @@ async function loadOverview() {
         document.getElementById("stats").innerHTML = `
           ${stat(c.live, "live facts", true)}
           ${stat(c.history, "history rows", false)}
-          ${stat(c.projects, "chambers", false)}`;
+          ${stat(c.projects, "chambers", false)}
+          ${stat(c.figures ?? 0, "figures cited", false)}`;
         setFinder(root.finder);
+        loadBackups();
         // per-chamber bars from the live facts we already have (or fetch)
         if (!factsCache.length) { try { const d = await api("/facts"); factsCache = d.facts || []; } catch (_) { } }
         const live = factsCache.filter(f => !f.superseded_at);

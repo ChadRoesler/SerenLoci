@@ -101,8 +101,11 @@ curl -X POST localhost:7422/search -H 'content-type: application/json' \
 | GET    | `/fact`          | The live value for `?project=&key=` (project defaults to `*`). 404 if none. |
 | GET    | `/fact/history`  | Every value a key has held, newest first.              |
 | DELETE | `/fact`          | Retire (soft-supersede) the live value for a key.      |
+| POST   | `/fact/figures`  | Cite an exhibit on the live value (`{project, key, source, caption}`). |
+| GET    | `/fact/figures`  | The exhibits the live value cites (`?project=&key=`); `/{digest}` is the bytes. |
+| DELETE | `/fact/figures/{digest}` | Take one off the live value.                   |
 | GET    | `/facts`         | List facts in scope (`?project=&include_superseded=`). |
-| GET    | `/counts`        | `{live, history, projects}`.                           |
+| GET    | `/counts`        | `{live, history, projects, figures}`.                  |
 | POST   | `/search`        | Exact + finder discovery, ranked.                      |
 | GET    | `/` `/health`    | Service info / liveness.                               |
 
@@ -110,6 +113,35 @@ Every search hit carries a normalized **0-1 score** (`exact`->1.0,
 `hybrid`->RRF fused into 0..1, `lexical`->bm25 mapped above 0). That's the common
 currency **SerenCorpusCallosum** uses to merge left-brain and
 right-brain results on one axis instead of comparing cosines to key-hits.
+
+---
+
+## Figures: the exhibits a fact cites
+
+A fact can cite a picture - the wiring photo behind "the fan header is the
+second one", the screenshot behind "the 409 looks like this" - but **a figure
+is never the fact.** The fact stays a sentence with a key, searchable,
+supersedable, with a why; the figure is what the sentence points at: "see
+figure". So there is no way to put a picture in Loci without saying in words
+what it proves. `set_fact(..., keep=[...])` cites exhibits as the value is
+set, `keep_with_fact` adds one to the live value, `look_at_fact` hands them
+back as image content, `drop_from_fact` takes one off. A superseded value
+keeps its own figures in history; the new value cites what it cites
+(`figure:<digest>` cites one the store already holds, without a second copy).
+
+The bytes go in a `figures/` folder beside the database under their sha256
+and nothing else (`seren_sinew.blobs`); the row (caption, source, type) is
+in `loci.db`. Both ride in the same snapshot, the folder hardlinked from the
+previous one. Where a figure may be taken **from** is the `figures:` block's
+to say: folders on this box and URL prefixes; nothing listed means nothing
+can be kept, and the refusal says so.
+
+```yaml
+figures:
+  sources:
+    - ~/seren/stores/workbench/gallery
+    - https://
+```
 
 ---
 

@@ -83,3 +83,24 @@ updates:
   check_interval_hours: 6      # cached; never checked per-request
   allow_prerelease: false      # true would offer you e.g. 2.0.0rc1
   # index_url: "https://pypi.org/pypi/{distribution}/json"   # private index?
+
+# ── Figures: the exhibits a fact cites (seren_sinew.blobs) ───────────────
+#
+# A fact can cite a picture, a clip, a sound or a PDF - the wiring photo, the
+# screenshot of the error - but a figure is never the fact: the fact stays a
+# sentence with a key, and the figure is what it points at. The bytes go in
+# `figures` beside the database under their hash, the row in loci.db, both in
+# the same snapshot. `sources` names where one may be taken from: folders on
+# this box, and URL prefixes. Nothing listed = nothing can be kept, and the
+# tool says so.
+# figures:
+#   enabled: true
+#   dir: ""                    # blank = `figures` beside the database
+#   max_bytes: 268435456       # one figure (256 MB)
+#   max_total: 34359738368     # the folder (32 GB)
+#   sources:
+#     - ~/seren/stores/workbench/gallery     # where make_image saves
+#     - https://                              # anything over TLS
+#
+# backup.compress: gz | xz | none - how an archive is compressed when a
+# Lodestar pulls one (xz is about half the size on a database).

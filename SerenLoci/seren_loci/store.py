@@ -63,10 +63,13 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional, Union
 
 from .config import LociConfig
-from .models.schemas import Fact, FactWrite, FUNDAMENTALS, SearchHit
+from .models.schemas import Fact, FactWrite, Figure, FUNDAMENTALS, SearchHit
+
+if TYPE_CHECKING:
+    from seren_sinew.blobs import BlobStore
 
 
 _SCHEMA = """
@@ -113,7 +116,28 @@ CREATE TABLE IF NOT EXISTS loci_meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+-- Figures: the exhibits a fact cites (seren_sinew.blobs; 15 Oct 2026). The
+-- bytes sit in the figures folder under `digest`; this row is every word
+-- about them. A figure belongs to ONE row of history: superseding a value
+-- does not carry its figures forward (a new value cites what it cites), and
+-- history keeps its own, like everything else here.
+CREATE TABLE IF NOT EXISTS figures (
+    fact_id   TEXT NOT NULL,
+    digest    TEXT NOT NULL,
+    bytes     INTEGER NOT NULL,
+    mime      TEXT,
+    caption   TEXT,
+    source    TEXT,
+    kept_at   REAL NOT NULL,
+    PRIMARY KEY (fact_id, digest)
+);
+CREATE INDEX IF NOT EXISTS idx_figures_digest ON figures(digest);
 """
+
+# A figure whose row was just written, or is about to be, must survive a
+# sweep that runs in between: nothing younger than this is swept.
+SWEEP_GRACE_SECONDS = 3600.0
 
 
 def _serialized(fn):
@@ -137,9 +161,13 @@ def _serialized(fn):
 class LociStore:
     """Owns the sqlite connection and the three access rungs."""
 
-    def __init__(self, config: LociConfig, warm_in_background: bool = False):
+    def __init__(self, config: LociConfig, warm_in_background: bool = False,
+                 figures: Optional["BlobStore"] = None):
         self._config = config
         self._db_path = config.resolved_db_path()
+        # The exhibits facts cite (seren_sinew.blobs.BlobStore); None = this
+        # store keeps none, and keep_figure says so.
+        self.figures = figures
         # check_same_thread=False: FastAPI and the MCP runner reach the store
         # from worker threads. Every public method holds self._lock (see
         # _serialized) - that lock, not sqlite, is what keeps two threads off
@@ -371,7 +399,117 @@ class LociStore:
             "WHERE project=? AND key=? AND superseded_at IS NULL",
             (project, key),
         ).fetchone()
-        return _row_to_fact(row) if row else None
+        return self._attach([_row_to_fact(row)])[0] if row else None
+
+    # ──────────────────────────────────────────────────────────────────
+    #  FIGURES - the exhibits a fact cites
+    # ──────────────────────────────────────────────────────────────────
+    def _attach(self, facts: list[Fact]) -> list[Fact]:
+        """Each fact with the figures its row cites (the rows, never the
+        bytes)."""
+        if not facts:
+            return facts
+        by_id: dict[str, list[Figure]] = {}
+        ids = [f.id for f in facts]
+        for i in range(0, len(ids), 500):
+            chunk = ids[i:i + 500]
+            marks = ",".join("?" * len(chunk))
+            for r in self._conn.execute(
+                    f"SELECT * FROM figures WHERE fact_id IN ({marks}) ORDER BY kept_at, digest", chunk):
+                by_id.setdefault(r["fact_id"], []).append(_row_to_figure(r))
+        for f in facts:
+            f.figures = by_id.get(f.id, [])
+        return facts
+
+    @_serialized
+    def keep_figure(self, fact_id: str, src: Union[bytes, Path], caption: Optional[str] = None,
+                    source: Optional[str] = None) -> Optional[Figure]:
+        """Cite a new exhibit on a fact (live or history, by id): the bytes
+        into the blob store, the row here. None when there is no such fact.
+        Raises what the blob store raises (BlobTooLarge, BlobStoreFull) and
+        ValueError for bytes that are not something Loci keeps - before
+        anything is written."""
+        if self.figures is None:
+            raise ValueError("this store keeps no figures (figures.enabled is off)")
+        from seren_sinew.blobs import head_of, kind_kept
+        if self._conn.execute("SELECT 1 FROM facts WHERE id=?", (fact_id,)).fetchone() is None:
+            return None
+        mime = kind_kept(head_of(src))
+        if mime is None:
+            raise ValueError("not a picture, clip, sound or PDF by its first bytes - words go in the fact, "
+                             "and nothing here trusts a filename")
+        blob = self.figures.put(src)
+        fig = Figure(digest=blob.digest, bytes=blob.bytes, mime=mime, caption=(caption or "").strip() or None,
+                     source=(source or "").strip() or None)
+        self._conn.execute(
+            "INSERT OR REPLACE INTO figures (fact_id, digest, bytes, mime, caption, source, kept_at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (fact_id, fig.digest, fig.bytes, fig.mime, fig.caption, fig.source, fig.kept_at))
+        self._conn.commit()
+        return fig
+
+    @_serialized
+    def cite_figure(self, fact_id: str, digest: str, caption: Optional[str] = None) -> Optional[Figure]:
+        """Cite on `fact_id` a figure some row already holds (a new value
+        keeping the old value's exhibit, by digest): the row is copied, the
+        bytes are the one file. None when there is no such fact or no such
+        figure."""
+        if self._conn.execute("SELECT 1 FROM facts WHERE id=?", (fact_id,)).fetchone() is None:
+            return None
+        row = self._conn.execute("SELECT * FROM figures WHERE digest=? ORDER BY kept_at LIMIT 1", (digest,)).fetchone()
+        if row is None or self.figures is None or not self.figures.has(digest):
+            return None
+        fig = Figure(digest=digest, bytes=row["bytes"], mime=row["mime"],
+                     caption=(caption or "").strip() or row["caption"], source=row["source"])
+        self._conn.execute(
+            "INSERT OR REPLACE INTO figures (fact_id, digest, bytes, mime, caption, source, kept_at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (fact_id, fig.digest, fig.bytes, fig.mime, fig.caption, fig.source, fig.kept_at))
+        self._conn.commit()
+        return fig
+
+    @_serialized
+    def figures_of(self, fact_id: str) -> list[Figure]:
+        rows = self._conn.execute("SELECT * FROM figures WHERE fact_id=? ORDER BY kept_at, digest",
+                                  (fact_id,)).fetchall()
+        return [_row_to_figure(r) for r in rows]
+
+    @_serialized
+    def drop_figure(self, fact_id: str, digest: str) -> bool:
+        """Take one figure off a fact's row. The bytes go too once no row
+        cites them. True when the row was there."""
+        n = self._conn.execute("DELETE FROM figures WHERE fact_id=? AND digest=?", (fact_id, digest)).rowcount
+        self._conn.commit()
+        if n:
+            self.sweep_figures()
+        return n > 0
+
+    @_serialized
+    def open_figure(self, fact_id: str, digest: str):
+        """(Figure, open file) for one a fact cites, or None. The bytes are
+        only ever handed out through a fact that cites them."""
+        if self.figures is None:
+            return None
+        row = self._conn.execute("SELECT * FROM figures WHERE fact_id=? AND digest=?", (fact_id, digest)).fetchone()
+        if row is None or not self.figures.has(digest):
+            return None
+        return _row_to_figure(row), self.figures.open(digest)
+
+    @_serialized
+    def referenced_digests(self) -> set[str]:
+        return {r[0] for r in self._conn.execute("SELECT DISTINCT digest FROM figures")}
+
+    @_serialized
+    def sweep_figures(self, grace: float = SWEEP_GRACE_SECONDS) -> list[str]:
+        """Remove the bytes no row cites any more (after a grace period)."""
+        if self.figures is None:
+            return []
+        return self.figures.sweep(self.referenced_digests(), grace=grace)
+
+    @_serialized
+    def figure_totals(self) -> dict[str, int]:
+        row = self._conn.execute("SELECT COUNT(*) AS c, COALESCE(SUM(bytes), 0) AS b FROM figures").fetchone()
+        return {"count": int(row["c"]), "bytes": int(row["b"])}
 
     @_serialized
     def get_history(self, project: str, key: str) -> list[Fact]:
@@ -385,7 +523,7 @@ class LociStore:
             "ORDER BY created_at DESC, rowid DESC",
             (project, key),
         ).fetchall()
-        return [_row_to_fact(r) for r in rows]
+        return self._attach([_row_to_fact(r) for r in rows])
 
     @_serialized
     def list_facts(self, project: Optional[str] = None,
@@ -403,7 +541,7 @@ class LociStore:
             q += " WHERE " + " AND ".join(clauses)
         q += " ORDER BY project, key"
         rows = self._conn.execute(q, params).fetchall()
-        return [_row_to_fact(r) for r in rows]
+        return self._attach([_row_to_fact(r) for r in rows])
 
     # ──────────────────────────────────────────────────────────────────
     #  READ - rungs 2 & 3: discovery (search)
@@ -506,7 +644,7 @@ class LociStore:
 
     def _fact_by_id(self, fid: str) -> Optional[Fact]:
         row = self._conn.execute("SELECT * FROM facts WHERE id=?", (fid,)).fetchone()
-        return _row_to_fact(row) if row else None
+        return self._attach([_row_to_fact(row)])[0] if row else None
 
     def _embed_text(self, fact: Fact) -> str:
         """What we hand the embedder for a fact. Delegates to the module-level
@@ -537,7 +675,8 @@ class LociStore:
         projects = self._conn.execute(
             "SELECT COUNT(DISTINCT project) c FROM facts WHERE superseded_at IS NULL"
         ).fetchone()["c"]
-        return {"live": live, "history": total - live, "projects": projects}
+        figures = self._conn.execute("SELECT COUNT(*) c FROM figures").fetchone()["c"]
+        return {"live": live, "history": total - live, "projects": projects, "figures": figures}
 
     @_serialized
     def close(self) -> None:
@@ -561,12 +700,18 @@ def _row_to_fact(row: sqlite3.Row) -> Fact:
     )
 
 
+def _row_to_figure(row: sqlite3.Row) -> Figure:
+    return Figure(digest=row["digest"], bytes=row["bytes"], mime=row["mime"], caption=row["caption"],
+                  source=row["source"], kept_at=row["kept_at"])
+
+
 def _hit(f: Fact, score: float, kind: str,
          raw_distance: Optional[float] = None) -> SearchHit:
     return SearchHit(id=f.id, project=f.project, key=f.key, value=f.value,
                      why=f.why, score=score, match_kind=kind,
                      source=f.source.value, raw_distance=raw_distance,
-                     live=f.is_live, superseded_at=f.superseded_at)
+                     live=f.is_live, superseded_at=f.superseded_at,
+                     figures=len(f.figures))
 
 
 # An exact-key hit on a RETIRED value, when history was asked for. Below the

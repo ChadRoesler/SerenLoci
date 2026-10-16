@@ -49,7 +49,7 @@ def test_a_snapshot_is_the_database_and_every_fact_with_its_history(app_client):
     snap = r.json()["snapshot"]
     root = Path(snap["path"])
     man = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
-    assert man["stores"] == ["facts"] and {s["name"] for s in man["skipped"]} <= {"models"}
+    assert man["stores"] == ["facts"] and {s["name"] for s in man["skipped"]} <= {"models", "figures"}
     assert man["exports"] == {"facts.jsonl": 3} and man["version"] and man["counts"]
 
     copy = root / "raw" / "facts" / "loci.db"
@@ -123,7 +123,7 @@ def test_a_new_box_restores_at_startup_and_a_full_one_is_left_alone(app_client, 
                           backup=BackupConfig(every_hours=0, restore_from=snap["path"], **backup))
     with TestClient(create_app(cfg("new", restore_reason="moving to the cluster"))) as c:
         assert "spaces" in c.get("/fact", params={"key": "indent"}).text
-        assert c.app.state.store.counts() == {"live": 1, "history": 1, "projects": 1}
+        assert c.app.state.store.counts() == {"live": 1, "history": 1, "projects": 1, "figures": 0}
         c.post("/fact", json={"key": "port", "value": "7200"})
     with TestClient(create_app(cfg("new", restore_reason="moving to the cluster"))) as c:
         assert c.app.state.store.counts()["live"] == 2, "the second start passes the key by: nothing is overwritten"

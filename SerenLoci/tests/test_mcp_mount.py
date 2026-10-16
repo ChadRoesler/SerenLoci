@@ -41,8 +41,8 @@ def test_mount_requires_store():
 def test_mount_succeeds_and_registers_tools(app_with_store):
     mcp = mount_mcp_routes(app_with_store)
     assert mcp is not None
-    # all six tools registered
-    assert _count_tools(mcp) == 6
+    # all nine tools registered: six for the facts, three for their figures (15 Oct 2026)
+    assert _count_tools(mcp) == 9
 
 
 def test_mount_sets_streamable_path_to_root(app_with_store):

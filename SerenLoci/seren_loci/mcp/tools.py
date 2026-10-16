@@ -25,19 +25,34 @@ TOOL ROSTER:
     fact_history    every value a key has ever held, newest first
     list_facts      scan a whole scope (a project, or everything)
 
+    keep_with_fact  cite an exhibit on the live value (a wiring photo, a
+                    screenshot of the error) - set_fact takes `keep` too
+    look_at_fact    the live value and its figures, SHOWN as images
+    drop_from_fact  take one figure off the live value
+
+    A figure is never the fact (15 Oct 2026). The fact is a sentence with a
+    key, searchable and supersedable, with a why; the figure is what the
+    sentence points at - "see figure". So there is no way to put a picture
+    in Loci without saying in words what it proves, and a superseded value
+    keeps its own figures in history while the new value cites what it
+    cites (`figure:<digest>` cites one again).
+
 NAMING: search_loci (not 'search') and fact_* prefixes keep these distinct from
 SerenMemory's tools (recall/remember/forget_memory) when a model is connected to
 BOTH hemispheres at once - no collisions.
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP, Image
+from seren_sinew.blobs import choose_shown, keep_each
 
 from ..config import LociConfig
 from ..models.schemas import FactWrite, FUNDAMENTALS, Source
 from ..store import LociStore
+
+CITE = "figure:"            # keep=["figure:<digest>"]: cite a figure the store already holds
 
 
 class LociToolImpl:
@@ -54,7 +69,7 @@ class LociToolImpl:
 
     # -- write ------------------------------------------------------------
     def set_fact(self, key: str, value: str, why: Optional[str] = None,
-                 project: str = FUNDAMENTALS) -> dict:
+                 project: str = FUNDAMENTALS, keep: Optional[list[str]] = None) -> dict:
         """Set (or replace) a fact in the left brain - an addressable, durable
         piece of coding/logic knowledge.
 
@@ -65,17 +80,117 @@ class LociToolImpl:
 
         `why` is not decoration: it's the hard-won reason the fact is shaped
         this way, and it's searchable. Always include it when there is one.
+
+        `keep`: exhibits this value cites - a wiring photo, a screenshot of
+        the error, a diagram. Paths on this box or URLs under the shelves
+        figures.sources names, or `figure:<digest>` to cite one the store
+        already holds (the superseded value's, listed in the answer as
+        `superseded_figures`: a new value does not inherit them, it cites
+        what it cites). The answer lists what was kept and what was refused
+        and why; the fact is set either way.
         """
         prior = self.store.get_fact(project, key)
         fact = self.store.set_fact(FactWrite(
             project=project, key=key, value=value, why=why, source=Source.MODEL))
-        return {
+        out: dict[str, Any] = {
             "ok": True,
             "id": fact.id,
             "project": project,
             "key": key,
             "superseded": prior.id if prior else None,
         }
+        if prior is not None and prior.figures:
+            out["superseded_figures"] = [f.model_dump() for f in prior.figures]
+        if keep:
+            out["kept"], out["refused"] = self._keep_many(fact.id, keep)
+        return out
+
+    def _keep_many(self, fact_id: str, refs: list[str], caption: Optional[str] = None
+                   ) -> tuple[list[dict], list[dict]]:
+        """Each reference cited: a `figure:<digest>` by copying its row, the
+        rest fetched and kept. What cannot be is listed with why, and the
+        rest still land."""
+        cites = [r for r in refs if r.startswith(CITE)]
+        fetches = [r for r in refs if not r.startswith(CITE)]
+        kept, refused = [], []
+        for ref in cites:
+            fig = self.store.cite_figure(fact_id, ref[len(CITE):].strip(), caption)
+            if fig is None:
+                refused.append({"source": ref, "why": "no figure with that digest is held here"})
+            else:
+                kept.append(fig.model_dump())
+        if fetches:
+            fg = self.config.figures
+            got, bad = keep_each(
+                fetches, lambda data, ref: (f := self.store.keep_figure(fact_id, data, caption=caption, source=ref))
+                and f.model_dump(), fg.sources, fg.max_bytes)
+            kept += got
+            refused += bad
+        return kept, refused
+
+    # -- figures: the exhibits a fact cites ----------------------------------
+    def keep_with_fact(self, key: str, source: str, caption: Optional[str] = None,
+                       project: str = FUNDAMENTALS) -> dict:
+        """Cite an exhibit on the live value of a (project, key): the wiring
+        photo behind "the fan header is the second one", the screenshot
+        behind "the 409 looks like this", the diagram the sentence describes.
+
+        The figure is never the fact. The fact stays a sentence with a key,
+        searchable, supersedable; the figure is what it points at, kept in
+        Loci's own folder under its hash and in the same snapshots. When the
+        value is superseded, its figures stay with it in history; the new
+        value cites what it cites (set_fact's `keep`, `figure:<digest>` to
+        cite one again).
+
+        `source`: a path on this box or a URL, under the shelves
+        figures.sources names, or `figure:<digest>`. What is kept is decided
+        by the bytes, never the filename. look_at_fact shows it back.
+        """
+        f = self.store.get_fact(project, key)
+        if f is None:
+            return {"ok": False, "project": project, "key": key, "error": "no live value for that key"}
+        kept, refused = self._keep_many(f.id, [source], caption)
+        return {"ok": bool(kept), "project": project, "key": key, "id": f.id, "kept": kept, "refused": refused}
+
+    # No return annotation, on purpose: with one, FastMCP tries to serialise
+    # the answer as structured output and cannot serialise an Image.
+    def look_at_fact(self, key: str, project: str = FUNDAMENTALS):
+        """The live value of a (project, key) and the exhibits it cites -
+        SHOWN, as images, not described. get_fact and search tell you a fact
+        has figures (`figures`); this is how you see them.
+
+        Pictures come back as image content beside the fact. Up to about 8
+        MB per look; the rest, and anything that is not a still picture (a
+        clip, a sound, a PDF), is listed under `not_shown` with the reason.
+        """
+        f = self.store.get_fact(project, key)
+        if f is None:
+            return {"found": False, "project": project, "key": key}
+
+        def read(row: dict) -> Optional[bytes]:
+            got = self.store.open_figure(f.id, row["digest"])
+            if got is None:
+                return None
+            with got[1] as fh:
+                return fh.read()
+        rows = [{"digest": g.digest, "file": g.file, "mime": g.mime, "bytes": g.bytes} for g in f.figures]
+        shown, not_shown = choose_shown(rows, read)
+        text = {"found": True, **f.model_dump(), "shown": len(shown),
+                "not_shown": [{k: v for k, v in r.items() if k != "digest"} for r in not_shown]}
+        return [text, *(Image(data=data, format=fmt) for data, fmt in shown)] if shown else text
+
+    def drop_from_fact(self, key: str, digest: str, project: str = FUNDAMENTALS) -> dict:
+        """Take one figure off the live value of a (project, key). The fact
+        stays; the figure's row goes, and its bytes go with it once no row
+        cites them. Needs the figure's `digest` (from the fact's `figures`).
+        History's figures are history: they are not touched from here.
+        """
+        f = self.store.get_fact(project, key)
+        if f is None:
+            return {"ok": False, "project": project, "key": key, "error": "no live value for that key"}
+        ok = self.store.drop_figure(f.id, digest)
+        return {"ok": ok, "project": project, "key": key, "digest": digest,
+                "note": "dropped" if ok else "the live value cites no such figure"}
 
     # -- read (exact) -----------------------------------------------------
     def get_fact(self, key: str, project: str = FUNDAMENTALS) -> dict:
@@ -89,13 +204,16 @@ class LociToolImpl:
         f = self.store.get_fact(project, key)
         if f is None:
             return {"found": False, "project": project, "key": key}
-        return {
+        out = {
             "found": True,
             "project": f.project,
             "key": f.key,
             "value": f.value,
             "why": f.why,
         }
+        if f.figures:
+            out["figures"] = [g.model_dump() for g in f.figures]       # the rows; look_at_fact shows them
+        return out
 
     # -- read (discovery) -------------------------------------------------
     def search_loci(self, query: str, n_results: int = 10,
@@ -188,5 +306,8 @@ def register_tools(mcp: FastMCP, store: LociStore,
     mcp.tool()(impl.forget_fact)
     mcp.tool()(impl.fact_history)
     mcp.tool()(impl.list_facts)
+    mcp.tool()(impl.keep_with_fact)
+    mcp.tool()(impl.look_at_fact)
+    mcp.tool()(impl.drop_from_fact)
 
     return impl

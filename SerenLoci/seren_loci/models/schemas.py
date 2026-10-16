@@ -28,7 +28,7 @@ import uuid
 from enum import Enum
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 
 # Reserved project scope meaning "true everywhere, not tied to one project".
@@ -51,6 +51,31 @@ def _new_id() -> str:
     return uuid.uuid4().hex
 
 
+class Figure(BaseModel):
+    """An exhibit a fact cites: a wiring photo, a screenshot of the error, a
+    diagram. The bytes sit in the figures folder under their sha256 and
+    nothing else (seren_sinew.blobs); this row is every word about them, on
+    the fact that cites them. A figure is never the fact - the fact is a
+    sentence with a key, searchable and supersedable, and the figure is what
+    the sentence points at: "see figure". A superseded value keeps its own
+    figures in history, like everything else; a new value cites what it
+    cites (set_fact's `keep`, or a `figure:<digest>` to cite one again)."""
+    digest: str = Field(..., description="sha256 of the bytes; the file's name in the figures folder.")
+    bytes: int
+    mime: Optional[str] = Field(None, description="What it is, from its first bytes - never from a filename.")
+    caption: Optional[str] = Field(None, description="What it shows, if the fact is not enough.")
+    source: Optional[str] = Field(None, description="Where it was taken from (a gallery path, a URL).")
+    kept_at: float = Field(default_factory=time.time)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def file(self) -> str:
+        """A name to show it under: figure-<digest start><ext>. A harness
+        that keeps a tool's pictures in a chat (Symposium) picks this up."""
+        from seren_sinew.blobs import file_name
+        return file_name("figure", self.digest, self.mime)
+
+
 class Fact(BaseModel):
     """One addressable locus: a (project, key) -> value, plus the WHY."""
     id: str = Field(default_factory=_new_id)
@@ -69,6 +94,9 @@ class Fact(BaseModel):
     superseded_by: Optional[str] = None
 
     extra: dict[str, Any] = Field(default_factory=dict)
+    # The exhibits this row cites: the rows, never the bytes. look_at_fact
+    # shows them.
+    figures: list[Figure] = Field(default_factory=list)
 
     @property
     def is_live(self) -> bool:
@@ -84,6 +112,17 @@ class FactWrite(BaseModel):
     why: Optional[str] = None
     source: Source = Source.USER
     extra: dict[str, Any] = Field(default_factory=dict)
+
+
+class FigureWrite(BaseModel):
+    """Input shape for POST /fact/figures: which live fact, where the figure
+    is now (a path under figures.sources, a URL under one of its prefixes,
+    or figure:<digest> to cite one the store already holds), and what it
+    shows."""
+    project: str = FUNDAMENTALS
+    key: str
+    source: str
+    caption: Optional[str] = None
 
 
 class SearchRequest(BaseModel):
@@ -117,6 +156,9 @@ class SearchHit(BaseModel):
     # the current answer; a retired one says so and carries when it retired.
     live: bool = True
     superseded_at: Optional[float] = None
+    # How many exhibits the fact cites. A count: a hit stays light, and
+    # look_at_fact shows them.
+    figures: int = 0
 
 
 class SearchResponse(BaseModel):

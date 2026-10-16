@@ -68,26 +68,46 @@ def create_app(config: LociConfig | None = None) -> FastAPI:
     async def lifespan(app: FastAPI):
         # -- Startup --
         app.state.config = cfg
+        from seren_sinew.blobs import BlobStore
+        from seren_sinew.stores import Store, StoreKeeper, restore_at_startup, snapshot_loop
+
+        # The exhibits facts cite: a folder beside the database, files named
+        # by their hash (seren_sinew.blobs). None = this store keeps none.
+        keep = (BlobStore(cfg.resolved_figures_dir(), max_bytes=cfg.figures.max_bytes, max_total=cfg.figures.max_total)
+                if cfg.figures.enabled else None)
+
+        def declared() -> list[Store]:
+            """What Loci keeps, for a snapshot and for a restore. The
+            database is required; the figures folder is optional on a
+            restore, since a snapshot from before it existed holds none. The
+            embedding model beside them is a download: declared, never copied."""
+            stores = [Store("facts", "sqlite", str(cfg.resolved_db_path()),
+                            "every fact and its history (superseded values included), and the search indexes")]
+            if keep is not None:
+                stores.append(keep.store("figures", "the exhibits facts cite, named by their hash"))
+            stores.append(Store("models", "dir", str(cfg.resolved_model_cache_path()),
+                                "the embedding model's downloaded weights", backed_up=False))
+            return stores
+
         # A restore, when the config asks for one (backup.restore_from +
         # restore_reason): into an empty store only, before the store opens.
         # Refused = the service does not start. No route does this.
         if (cfg.backup.restore_from or "").strip():
-            from seren_sinew.stores import Store as _Store, restore_at_startup
-            restore_at_startup("seren-loci", [_Store("facts", "sqlite", str(cfg.resolved_db_path()))],
+            restore_at_startup("seren-loci", declared(),
                                cfg.backup.restore_from, cfg.backup.restore_reason,
                                cfg.resolved_backup_dir() / "seren-loci",
                                log=lambda m: log.warning(f"[seren-loci] {m}"))
         # warm_in_background: listen now, on the lexical floor; the embedder
         # (tens of seconds to import) arrives behind the door. See LociStore.
-        store = LociStore(cfg, warm_in_background=True)
+        store = LociStore(cfg, warm_in_background=True, figures=keep)
         app.state.store = store
         log.info(f"[seren-loci] store ready at {cfg.resolved_db_path()}")
         log.info(f"[seren-loci] facts: {store.counts()} | finder: {store.finder_kind} ({store.finder_state})")
 
         # What this service keeps, and snapshots of it on its own schedule
-        # (seren_sinew.stores). The embedding model beside the database is a
-        # download: declared, never copied.
-        from seren_sinew.stores import Store, StoreKeeper, snapshot_loop
+        # (seren_sinew.stores): the database, and the figures folder beside
+        # it, hardlinked from the previous snapshot. The embedding model is
+        # a download: declared, never copied.
 
         def _facts_export() -> dict:
             rows = store.list_facts(include_superseded=True)
@@ -96,8 +116,10 @@ def create_app(config: LociConfig | None = None) -> FastAPI:
         def _facts_check(restored, manifest, snapshot_dir) -> dict:
             """A rehearsal's look at a restored COPY of the database: the
             same counts counts() makes, read-only, against the manifest and
-            the export. (Loci has no purge: a forgotten fact is superseded,
-            and its history is in the snapshot like everything else.)"""
+            the export, and every figure the facts cite looked for in the
+            copied folder. (Loci has no purge: a forgotten fact is
+            superseded, and its history is in the snapshot like everything
+            else.)"""
             import sqlite3
             f = restored["facts"] / cfg.resolved_db_path().name
             con = sqlite3.connect(f"file:{f.as_posix()}?mode=ro", uri=True)
@@ -106,24 +128,30 @@ def create_app(config: LociConfig | None = None) -> FastAPI:
                 total = con.execute("SELECT COUNT(*) FROM facts").fetchone()[0]
                 projects = con.execute(
                     "SELECT COUNT(DISTINCT project) FROM facts WHERE superseded_at IS NULL").fetchone()[0]
+                try:                                        # a snapshot from before there were figures has no table
+                    cited = {r[0] for r in con.execute("SELECT DISTINCT digest FROM figures")}
+                    figures = con.execute("SELECT COUNT(*) FROM figures").fetchone()[0]
+                except sqlite3.OperationalError:
+                    cited, figures = set(), 0
             finally:
                 con.close()
             problems = []
             exported = (manifest.get("exports") or {}).get("facts.jsonl")
             if exported is not None and exported != total:
                 problems.append(f"the export has {exported} facts, the restored database holds {total}")
-            return {"counts": {"live": live, "history": total - live, "projects": projects}, "problems": problems}
+            copied = BlobStore(restored["figures"]) if "figures" in restored else None
+            lost = [d for d in cited if copied is None or not copied.has(d)]
+            if lost:
+                problems.append(f"{len(lost)} of the {len(cited)} figure(s) the facts cite are not in the copy")
+            return {"counts": {"live": live, "history": total - live, "projects": projects, "figures": figures},
+                    "problems": problems}
 
         app.state.stores = StoreKeeper(
-            "seren-loci",
-            lambda: [Store("facts", "sqlite", str(cfg.resolved_db_path()),
-                           "every fact and its history (superseded values included), and the search indexes"),
-                     Store("models", "dir", str(cfg.resolved_model_cache_path()),
-                           "the embedding model's downloaded weights", backed_up=False)],
+            "seren-loci", declared,
             cfg.resolved_backup_dir(), export=_facts_export, check=_facts_check,
             extra=lambda: {"version": APP_VERSION, "embedder": cfg.storage.embedding_model,
                            "counts": store.counts(), "finder": store.finder_kind},
-            keep_daily=cfg.backup.keep_daily, keep_weekly=cfg.backup.keep_weekly,
+            keep_daily=cfg.backup.keep_daily, keep_weekly=cfg.backup.keep_weekly, compress=cfg.backup.compress,
             log=lambda m: log.info(f"[seren-loci] {m}")) if cfg.backup.enabled else None
         _snap_task = None
         if app.state.stores is not None and cfg.backup.every_hours > 0:

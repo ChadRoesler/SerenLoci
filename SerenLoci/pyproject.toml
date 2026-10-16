@@ -28,10 +28,10 @@ dependencies = [
     "uvicorn[standard]>=0.32.0",
     "pydantic>=2.9.0",
     "pyyaml>=6.0.2",
-    # httpx is deliberately NOT listed here - seren_loci never imports it.
-    # It still ends up installed, via seren-meninges (which needs it for the
-    # update check) and via dev/test-client installs for starlette's
-    # TestClient. Not declaring what we do not import stays correct hygiene.
+    # httpx is listed at the end of this block, since 15 Oct 2026, for one
+    # reason only: a figure fetched from a URL. Until then it was deliberately
+    # NOT listed - seren_loci never imported it - and that hygiene still holds
+    # for everything else.
     #
     # HISTORICAL NOTE, so nobody re-derives the old reasoning: httpx was once
     # pulled OUT of here to try to make [updates] a real gate - the theory
@@ -49,7 +49,10 @@ dependencies = [
     "seren-meninges>=2.4.0,<6",
     # Shared request logging - one copy across the family (SerenSinew). Mounted
     # outermost (before auth) so even 401s get logged. -> loci-requests.log.
-    "seren-sinew>=1.10.0,<6",  # 1.10.0: seren_sinew.stores with the rehearsal and restore_at_startup
+    "seren-sinew>=5.2.0,<6",  # 5.2.0: seren_sinew.blobs and the `blobs` store kind (figures); 1.10.0: stores, rehearsal, restore_at_startup
+    # 15 Oct 2026: a figure fetched from a URL (seren_sinew.blobs.fetch, imported
+    # for a figure, never for the update check - the note above still stands).
+    "httpx>=0.27",
 ]
 
 [project.optional-dependencies]
