@@ -68,7 +68,8 @@ def _open(tmp_db, model=None) -> LociStore:
 
 
 def _vec_rowids(store) -> set[int]:
-    return {r[0] for r in store._conn.execute("SELECT fact_rowid FROM facts_vec")}
+    """The fact rowids the index holds a vector for (one per lane)."""
+    return {r[0] // store_mod._LANES for r in store._conn.execute("SELECT vec_rowid FROM facts_vec")}
 
 
 # ── 1. history ───────────────────────────────────────────────────────────────
@@ -214,7 +215,7 @@ def test_vectors_superseded_on_the_floor_are_pruned_on_the_next_vector_boot(tmp_
 @needs_vec
 def test_a_clean_vector_boot_leaves_no_transaction_open(tmp_db):
     """Seen live 26 Sept 2026: the FIRST set_fact after every restart of the
-    wren Loci failed with 'cannot start a transaction within a transaction',
+    Loci failed with 'cannot start a transaction within a transaction',
     and the retry worked. The boot's backfill ran _prune_dead's DELETE (which
     opens a transaction in Python's sqlite3 even when it deletes nothing) and
     committed only if something was added or pruned - so a clean boot handed

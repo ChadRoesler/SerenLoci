@@ -82,7 +82,9 @@ def _open(tmp_db, model):
 
 
 def _vec_count(store) -> int:
-    return store._conn.execute("SELECT COUNT(*) c FROM facts_vec").fetchone()["c"]
+    """How many facts the index holds (a fact has a vector per lane)."""
+    return store._conn.execute(
+        "SELECT COUNT(DISTINCT vec_rowid / ?) c FROM facts_vec", (store_mod._LANES,)).fetchone()["c"]
 
 
 def _vec_dim(store) -> int:

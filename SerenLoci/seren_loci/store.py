@@ -9,7 +9,7 @@ path has three rungs, cheapest first:
                   No embedding, no ranking. You know the address, you get the
                   thing. This is the spine and it runs free.
 
-    2. LEXICAL    FTS5 full-text over (key, value, why). Live rows by default;
+    2. LEXICAL    FTS5 full-text over (project, key, value, why). Live rows by default;
                   history too when a search asks for it (include_superseded).
                   The "I sort of remember the words" path. Still no vectors,
                   still floor-cheap.
@@ -18,7 +18,9 @@ path has three rungs, cheapest first:
                   when storage.embedding_model is set. The "this smells like
                   that CUDA thing" associative jump - find the door when you
                   don't know the key. The store works fully without it. History
-                  never enters this lane: a retired value is not a door.
+                  never enters this lane: a retired value is not a door. Two
+                  vectors a fact, the whole fact and its why (_finder_texts),
+                  so a long value cannot push the why out of the window.
 
 THE STRICT SUPERSEDE RULE - enforced by the DATABASE, not by hope:
 
@@ -59,6 +61,7 @@ from __future__ import annotations
 
 import functools
 import json
+import re
 import sqlite3
 import threading
 import time
@@ -66,7 +69,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional, Union
 
 from .config import LociConfig
-from .models.schemas import Fact, FactWrite, Figure, FUNDAMENTALS, SearchHit
+from .models.schemas import Fact, FactMove, FactWrite, Figure, FUNDAMENTALS, SearchHit
 
 if TYPE_CHECKING:
     from seren_sinew.blobs import BlobStore
@@ -84,7 +87,8 @@ CREATE TABLE IF NOT EXISTS facts (
     created_at    REAL    NOT NULL,
     superseded_at REAL,                          -- NULL == live
     superseded_by TEXT,
-    extra         TEXT    NOT NULL DEFAULT '{}'  -- JSON
+    extra         TEXT    NOT NULL DEFAULT '{}', -- JSON
+    why_changed   TEXT                           -- a retired row's reason (_ensure_columns)
 );
 
 -- THE invariant: one live value per (project, key). Partial index = sqlite
@@ -101,8 +105,12 @@ CREATE INDEX IF NOT EXISTS idx_facts_lookup ON facts(project, key, superseded_at
 -- FTS row was deleted on supersede, which made include_superseded a no-op:
 -- accepted, echoed, and unable to find anything. The 'fts_scope' stamp in
 -- loci_meta marks a store whose index has been rebuilt to cover history.)
+-- The project is a column too (19 Oct 2026): a question naming its subject
+-- ('Laionan's title') must find that project's fact in a store holding
+-- many, and before this nothing a search could match said which project a
+-- row belonged to. 'fts_columns' marks a store rebuilt with it.
 CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
-    key, value, why,
+    project, key, value, why,
     content='facts', content_rowid='rowid',
     tokenize='unicode61'
 );
@@ -134,6 +142,10 @@ CREATE TABLE IF NOT EXISTS figures (
 );
 CREATE INDEX IF NOT EXISTS idx_figures_digest ON figures(digest);
 """
+
+# The FTS table's columns, as _SCHEMA creates it and _reconcile_fts stamps it.
+_FTS_COLUMNS = "project,key,value,why"
+_FTS_TABLE_SQL = _SCHEMA[_SCHEMA.index("CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts"):].split(";")[0]
 
 # A figure whose row was just written, or is about to be, must survive a
 # sweep that runs in between: nothing younger than this is swept.
@@ -179,6 +191,7 @@ class LociStore:
         self._conn.execute("PRAGMA foreign_keys=ON;")
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
+        self._ensure_columns()
         self._reconcile_fts()
 
         # Additive vector finder. None unless an embedder is configured AND the
@@ -242,6 +255,18 @@ class LociStore:
             self._warming.join(timeout)
         return self._finder is not None
 
+    def _ensure_columns(self) -> None:
+        """Add the columns a store written by an older build lacks. CREATE
+        TABLE IF NOT EXISTS leaves an existing table as it was, so a column
+        born later arrives here, once: why_changed (19 Oct 2026). It is
+        nullable, so every older retired row reads as 'no reason given',
+        which is what it was. It stays out of FTS: a retired row is found by
+        its value and why, and its reason rides along on the hit."""
+        have = {r["name"] for r in self._conn.execute("PRAGMA table_info(facts)")}
+        if "why_changed" not in have:
+            self._conn.execute("ALTER TABLE facts ADD COLUMN why_changed TEXT")
+            self._conn.commit()
+
     def _reconcile_fts(self) -> None:
         """Make sure the FTS index covers history, once per store.
 
@@ -249,15 +274,26 @@ class LociStore:
         superseded, so its history is lexically invisible. FTS5's external-
         content 'rebuild' re-reads the facts table in one statement; Loci is
         small by design, so this is a boot-time blink, and the stamp means it
-        happens exactly once."""
-        row = self._conn.execute(
-            "SELECT value FROM loci_meta WHERE key='fts_scope'").fetchone()
-        if row is not None and row["value"] == "all":
+        happens exactly once.
+
+        The same goes for the index's columns: a store whose FTS table
+        predates the project column (fts_columns) has it dropped and created
+        again with today's columns, then rebuilt. Lossless - the FTS table is
+        derived from `facts`, like the vectors."""
+        def stamp(key: str) -> Optional[str]:
+            row = self._conn.execute("SELECT value FROM loci_meta WHERE key=?", (key,)).fetchone()
+            return row["value"] if row else None
+
+        if stamp("fts_scope") == "all" and stamp("fts_columns") == _FTS_COLUMNS:
             return
+        if stamp("fts_columns") != _FTS_COLUMNS:
+            self._conn.execute("DROP TABLE IF EXISTS facts_fts")
+            self._conn.execute(_FTS_TABLE_SQL)
         self._conn.execute("INSERT INTO facts_fts(facts_fts) VALUES('rebuild')")
-        self._conn.execute(
-            "INSERT INTO loci_meta(key, value) VALUES('fts_scope', 'all') "
-            "ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+        for key, value in (("fts_scope", "all"), ("fts_columns", _FTS_COLUMNS)):
+            self._conn.execute(
+                "INSERT INTO loci_meta(key, value) VALUES(?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
         self._conn.commit()
 
     # ──────────────────────────────────────────────────────────────────
@@ -307,7 +343,8 @@ class LociStore:
         """Set (or replace) the live value for (project, key).
 
         If a live value already exists for that key it is superseded - stamped
-        with superseded_at + a forward link to the new row, kept as history.
+        with superseded_at + a forward link to the new row, kept as history,
+        with w.why_changed as the reason it stopped being the answer.
         The supersede + insert happen in ONE transaction so two live rows for a
         key never coexist (and the partial unique index would reject it anyway).
         """
@@ -331,37 +368,42 @@ class LociStore:
                 # the vector lane is live-only and a retired value must not
                 # take a KNN seat from a live one.
                 cur.execute(
-                    "UPDATE facts SET superseded_at=?, superseded_by=? WHERE rowid=?",
-                    (now, fact.id, old["rowid"]),
+                    "UPDATE facts SET superseded_at=?, superseded_by=?, why_changed=? WHERE rowid=?",
+                    (now, fact.id, _clean(w.why_changed), old["rowid"]),
                 )
                 if self._finder is not None:
                     self._finder.delete(old["rowid"])
 
-            # Insert the new live row.
-            cur.execute(
-                "INSERT INTO facts(id, project, key, value, why, source, "
-                "created_at, superseded_at, superseded_by, extra) "
-                "VALUES(?,?,?,?,?,?,?,NULL,NULL,?)",
-                (fact.id, fact.project, fact.key, fact.value, fact.why,
-                 fact.source.value, now, json.dumps(fact.extra)),
-            )
-            new_rowid = cur.lastrowid
-            self._fts_insert(cur, new_rowid, fact.key, fact.value, fact.why)
-            if self._finder is not None:
-                self._finder.add(new_rowid, self._embed_text(fact))
+            self._insert_live(cur, fact)
             self._conn.commit()
         except Exception:
             self._conn.rollback()
             raise
         return fact
 
+    def _insert_live(self, cur, fact: Fact) -> int:
+        """Insert `fact` as a new live row inside the caller's transaction:
+        the row, its FTS row, its vectors. Returns the rowid."""
+        cur.execute(
+            "INSERT INTO facts(id, project, key, value, why, source, "
+            "created_at, superseded_at, superseded_by, extra) "
+            "VALUES(?,?,?,?,?,?,?,NULL,NULL,?)",
+            (fact.id, fact.project, fact.key, fact.value, fact.why,
+             fact.source.value, fact.created_at, json.dumps(fact.extra)),
+        )
+        new_rowid = cur.lastrowid
+        self._fts_insert(cur, new_rowid, fact.project, fact.key, fact.value, fact.why)
+        if self._finder is not None:
+            self._finder.add(new_rowid, self._embed_texts(fact))
+        return new_rowid
+
     @_serialized
-    def forget(self, project: str, key: str) -> bool:
+    def forget(self, project: str, key: str, why_changed: Optional[str] = None) -> bool:
         """Retire the live value for a key (supersede with no replacement).
 
         'Forget is a flag, not a scalpel' - this is the soft retire: the row
-        stays as history, it just stops being the live answer. Returns True if
-        there was a live value to retire.
+        stays as history, it just stops being the live answer, and
+        why_changed says why. Returns True if there was a live value to retire.
         """
         cur = self._conn.cursor()
         try:
@@ -375,8 +417,8 @@ class LociStore:
                 self._conn.rollback()
                 return False
             cur.execute(
-                "UPDATE facts SET superseded_at=? WHERE rowid=?",
-                (time.time(), old["rowid"]),
+                "UPDATE facts SET superseded_at=?, why_changed=? WHERE rowid=?",
+                (time.time(), _clean(why_changed), old["rowid"]),
             )
             if self._finder is not None:
                 self._finder.delete(old["rowid"])
@@ -385,6 +427,95 @@ class LociStore:
         except Exception:
             self._conn.rollback()
             raise
+
+    @_serialized
+    def move_fact(self, m: FactMove) -> Optional[Fact]:
+        """Move the live value at (project, key) to (to_project, to_key).
+
+        Returns the new live row, or None when there is no live value to move.
+        Raises ValueError when the move goes nowhere or the target already
+        holds a live value: supersede or move that one first, never blend.
+
+        The old address is retired the way a supersede retires it - stamped,
+        pointed at the new row, with why_changed - and its history stays where
+        it was written; no row of history is ever rewritten. The new row is a
+        fresh row at the new address carrying the same value, why, source and
+        extra, and citing the same figures (one file, two rows). get_history
+        at the new address follows superseded_by back across the move, so the
+        trail reads unbroken from either end. Built for merging project names
+        that mean one scope."""
+        to_project = m.project if m.to_project is None else m.to_project
+        to_key = m.key if m.to_key is None else m.to_key
+        if (to_project, to_key) == (m.project, m.key):
+            raise ValueError("the move goes nowhere: that is the address it already has")
+        cur = self._conn.cursor()
+        try:
+            cur.execute("BEGIN")
+            old = cur.execute(
+                "SELECT * FROM facts WHERE project=? AND key=? AND superseded_at IS NULL",
+                (m.project, m.key),
+            ).fetchone()
+            if old is None:
+                self._conn.rollback()
+                return None
+            if cur.execute(
+                    "SELECT 1 FROM facts WHERE project=? AND key=? AND superseded_at IS NULL",
+                    (to_project, to_key)).fetchone() is not None:
+                raise ValueError(f"project={to_project!r} key={to_key!r} already holds a live value; "
+                                 "supersede or move that one first")
+            moved = Fact(project=to_project, key=to_key, value=old["value"], why=old["why"],
+                         source=old["source"], extra=json.loads(old["extra"]) if old["extra"] else {})
+            cur.execute(
+                "UPDATE facts SET superseded_at=?, superseded_by=?, why_changed=? WHERE rowid=?",
+                (moved.created_at, moved.id, _clean(m.why_changed), old["rowid"]),
+            )
+            if self._finder is not None:
+                self._finder.delete(old["rowid"])
+            self._insert_live(cur, moved)
+            cur.execute(
+                "INSERT INTO figures (fact_id, digest, bytes, mime, caption, source, kept_at) "
+                "SELECT ?, digest, bytes, mime, caption, source, kept_at FROM figures WHERE fact_id=?",
+                (moved.id, old["id"]),
+            )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        return self._fact_by_id(moved.id)
+
+    @_serialized
+    def write_notes(self, w: FactWrite, replaced: bool) -> list[str]:
+        """What the store sees in a write, said back to whoever made it.
+
+        Notes, never refusals: the fact is set either way, and nothing here
+        changes it. Whoever lives in the Loci decides what to do about them.
+        `replaced`: whether this write superseded a live value.
+        """
+        notes: list[str] = []
+        if not (w.why or "").strip():
+            notes.append("no why given. A fact without its reason is a rule that gets broken the "
+                         "first time it is inconvenient; set it again with one when there is one.")
+        if _clean(w.why_changed) and not replaced:
+            notes.append("why_changed was not kept: there was no live value to replace, and the "
+                         "reason is kept on the value a write replaces.")
+        notes += self._fold_notes(w.project)
+        if self._finder is not None:
+            notes += self._finder.window_notes(w.project, w.key, w.value, w.why)
+        return notes
+
+    def _fold_notes(self, project: str) -> list[str]:
+        """A project name that reads as one this store already has, once case
+        and separators are folded away ('seren' and 'Seren', 'SerenMemory' and
+        'seren-memory'). No registry: Loci holds anything its inhabitant
+        holds as fact, under names of their choosing, so the only list to
+        check against is the one already here."""
+        mine = _fold(project)
+        rows = self._conn.execute(
+            "SELECT project, COUNT(*) AS c FROM facts WHERE superseded_at IS NULL "
+            "GROUP BY project ORDER BY project").fetchall()
+        return [f"{project!r} reads as the same name as {r['project']!r} ({r['c']} live "
+                f"fact{'' if r['c'] == 1 else 's'}). If they are one scope, move_fact brings them together."
+                for r in rows if r["project"] != project and _fold(r["project"]) == mine]
 
     # ──────────────────────────────────────────────────────────────────
     #  READ - rung 1: exact deterministic lookup (the spine)
@@ -514,16 +645,44 @@ class LociStore:
     @_serialized
     def get_history(self, project: str, key: str) -> list[Fact]:
         """Every value this key has ever held, newest first. The audit trail
-        the strict-supersede rule preserves."""
+        the strict-supersede rule preserves.
+
+        A move is followed back: when a row here came from another address
+        (a row there names it in superseded_by), that address's history up to
+        the move joins in, so a re-addressed fact's trail reads unbroken. Each
+        row keeps the project and key it was written under."""
+        rows: list[sqlite3.Row] = []
+        self._history_into(project, key, None, rows, set())
         # rowid breaks ties: three values set inside one clock tick (Windows
         # time.time() steps in ~15ms) share a created_at and would otherwise
         # come back in arbitrary order, and "newest first" is the promise.
-        rows = self._conn.execute(
-            "SELECT * FROM facts WHERE project=? AND key=? "
-            "ORDER BY created_at DESC, rowid DESC",
-            (project, key),
-        ).fetchall()
+        rows.sort(key=lambda r: (r["created_at"], r["rowid"]), reverse=True)
         return self._attach([_row_to_fact(r) for r in rows])
+
+    def _history_into(self, project: str, key: str, upto_rowid: Optional[int],
+                      rows: list, seen: set) -> None:
+        """Gather the rows at (project, key) - up to and including
+        upto_rowid when following a move, since the old address may have been
+        set fresh afterwards and that is its own story - then follow every
+        move into them. `seen` makes a fact moved there and back again
+        terminate."""
+        q, params = "SELECT * FROM facts WHERE project=? AND key=?", [project, key]
+        if upto_rowid is not None:
+            q += " AND rowid <= ?"
+            params.append(upto_rowid)
+        here = [r for r in self._conn.execute(q, params).fetchall() if r["rowid"] not in seen]
+        seen.update(r["rowid"] for r in here)
+        rows.extend(here)
+        ids = [r["id"] for r in here]
+        for i in range(0, len(ids), 500):
+            chunk = ids[i:i + 500]
+            marks = ",".join("?" * len(chunk))
+            moved_in = self._conn.execute(
+                f"SELECT rowid, project, key FROM facts WHERE superseded_by IN ({marks}) "
+                f"AND NOT (project=? AND key=?)", (*chunk, project, key)).fetchall()
+            for src in moved_in:
+                if src["rowid"] not in seen:
+                    self._history_into(src["project"], src["key"], src["rowid"], rows, seen)
 
     @_serialized
     def list_facts(self, project: Optional[str] = None,
@@ -574,8 +733,10 @@ class LociStore:
             if f is not None:
                 hits[f.id] = _hit(f, score=1.0, kind="exact")
             if include_superseded:
+                # get_history follows a move back across addresses; a search
+                # stays inside the scopes it was asked for.
                 for h in self.get_history(scope, query):
-                    if not h.is_live and h.id not in hits:
+                    if not h.is_live and h.id not in hits and h.project in scopes:
                         hits[h.id] = _hit(h, score=_EXACT_HISTORY, kind="exact")
 
         # 2. finder - hybrid (vector + FTS5 fused via RRF) when embedder present,
@@ -646,17 +807,18 @@ class LociStore:
         row = self._conn.execute("SELECT * FROM facts WHERE id=?", (fid,)).fetchone()
         return self._attach([_row_to_fact(row)])[0] if row else None
 
-    def _embed_text(self, fact: Fact) -> str:
-        """What we hand the embedder for a fact. Delegates to the module-level
-        _finder_text so the set_fact path and the index rebuild share ONE recipe
-        and can't drift (a DTO-asymmetry-style silent killer if they ever did)."""
-        return _finder_text(fact.key, fact.value, fact.why)
+    def _embed_texts(self, fact: Fact) -> list[str]:
+        """What we hand the embedder for a fact, one text per lane. Delegates
+        to the module-level _finder_texts so the set_fact path and the index
+        rebuild share ONE recipe and can't drift (a DTO-asymmetry-style silent
+        killer if they ever did)."""
+        return _finder_texts(fact.project, fact.key, fact.value, fact.why)
 
-    def _fts_insert(self, cur, rowid: int, key: str, value: str,
+    def _fts_insert(self, cur, rowid: int, project: str, key: str, value: str,
                     why: Optional[str]) -> None:
         cur.execute(
-            "INSERT INTO facts_fts(rowid, key, value, why) VALUES(?,?,?,?)",
-            (rowid, key, value, why or ""),
+            "INSERT INTO facts_fts(rowid, project, key, value, why) VALUES(?,?,?,?,?)",
+            (rowid, project, key, value, why or ""),
         )
 
     def _fts_search(self, query: str, scopes: list[str], limit: int,
@@ -695,9 +857,20 @@ def _row_to_fact(row: sqlite3.Row) -> Fact:
         id=row["id"], project=row["project"], key=row["key"],
         value=row["value"], why=row["why"], source=row["source"],
         created_at=row["created_at"], superseded_at=row["superseded_at"],
-        superseded_by=row["superseded_by"],
+        superseded_by=row["superseded_by"], why_changed=row["why_changed"],
         extra=json.loads(row["extra"]) if row["extra"] else {},
     )
+
+
+def _clean(text: Optional[str]) -> Optional[str]:
+    """A reason as given, or None for nothing / only whitespace."""
+    return (text or "").strip() or None
+
+
+def _fold(name: str) -> str:
+    """A project name with case and separators folded away, for telling
+    when two names are one: 'SerenMemory', 'seren-memory', 'seren_memory'."""
+    return re.sub(r"[\s_.\-]+", "", name).casefold()
 
 
 def _row_to_figure(row: sqlite3.Row) -> Figure:
@@ -711,7 +884,7 @@ def _hit(f: Fact, score: float, kind: str,
                      why=f.why, score=score, match_kind=kind,
                      source=f.source.value, raw_distance=raw_distance,
                      live=f.is_live, superseded_at=f.superseded_at,
-                     figures=len(f.figures))
+                     why_changed=f.why_changed, figures=len(f.figures))
 
 
 # An exact-key hit on a RETIRED value, when history was asked for. Below the
@@ -721,15 +894,48 @@ def _hit(f: Fact, score: float, kind: str,
 _EXACT_HISTORY = 0.9
 
 
-def _finder_text(key: str, value: str, why: Optional[str]) -> str:
-    """The text the embedder sees for a fact: key + value + why, so the
-    associative jump can latch onto any of them ('that CUDA thing' should find a
-    fact whose WHY mentions CUDA even if the key doesn't). The ONE recipe -
-    set_fact and the index rebuild both go through here so they can never drift."""
-    parts = [key, value]
-    if why:
-        parts.append(why)
-    return "  ".join(parts)
+def _finder_texts(project: str, key: str, value: str, why: Optional[str]) -> list[str]:
+    """The texts the embedder sees for a fact, one per LANE, each its own
+    vector, the nearer one answering for the fact:
+
+        lane 0  project + key + value + why   the whole fact, with where it lives
+        lane 1  project + key + why           only when there is a why
+
+    The project leads both (19 Oct 2026, measured by Probe on a store holding
+    eleven entities' facts: MRR 0.25 to 0.70 with the project in the text,
+    lexical and vector). Without it nothing the finder read said whose title
+    a 'title' fact was, so a question naming its subject tied every title in
+    the store - and the Callosum searches a Loci unscoped unless asked. It is
+    also what the scoped query augmentation already puts on the query side.
+    Fundamentals ('*') add nothing: they belong everywhere.
+
+    So the associative jump can latch onto any of them ('that CUDA thing'
+    should find a fact whose WHY mentions CUDA even if the key doesn't) - and
+    keep latching when the fact is long. The embedder reads a window (MiniLM:
+    256 tokens), and with one joined text a long value pushed the why out of
+    it entirely in a store whose point
+    is that the why is searchable. Lane 0 is the text a fact always had, with
+    its project in front; lane 1 can only bring a fact nearer. The project and
+    key ride in both so each lane knows what it is about.
+
+    The ONE recipe - set_fact and the index rebuild both go through here so
+    they can never drift. Changing it means changing _RECIPE, so every store
+    rebuilds its index from text on the next boot."""
+    head = [key] if project == FUNDAMENTALS else [project, key]
+    texts = ["  ".join(head + [value] + ([why] if why else []))]
+    if why and why.strip():
+        texts.append("  ".join(head + [why]))
+    return texts
+
+
+# How many vectors a fact may hold, and which lane is which. A fact's vectors
+# sit at vec_rowid = fact rowid * _LANES + lane, so `vec_rowid / _LANES` is
+# the fact's rowid in SQL (integer division) and its lanes sit side by side.
+_LANES = 2
+# Names the recipe _finder_texts embeds. Stamped in loci_meta beside the
+# embedder; a store whose index was built by another recipe (or before there
+# was a stamp for it) rebuilds from text on boot - lossless, like a model change.
+_RECIPE = "project:whole+why/2026-10-19"
 
 
 # The exact rung owns 1.0. Every non-exact hit MUST stay strictly below it, or
@@ -792,6 +998,11 @@ _FTS_STOPWORDS = frozenset({
 })
 
 
+# A possessive on the end of a query word: 's / 's, or a bare apostrophe (see
+# _fts_query). Straight and curly, either case.
+_POSSESSIVE = re.compile(r"(?:['’][sS]|['’])$")
+
+
 def _fts_search(conn: sqlite3.Connection, query: str, scopes: list[str],
                 limit: int, include_superseded: bool = False
                 ) -> list[tuple[str, float]]:
@@ -840,12 +1051,20 @@ def _fts_query(raw: str) -> str:
     AND branch is untouched (every word of a 1-3 term query is deliberate), and an
     all-stopword query keeps its raw tokens rather than degrading to match-nothing.
 
+    POSSESSIVES ARE STRIPPED before quoting (19 Oct 2026, found by Probe on the
+    Vellmarch merged twin). unicode61 splits "Laionan's" into 'laionan' 's', so the
+    quoted phrase only matched a row that itself said "Laionan's": 'What is
+    Laionan's title now?' lost the one word that named its subject, and any
+    question about someone's anything with it. A trailing 's or 's (straight or
+    curly), or a bare trailing apostrophe, comes off; a word that was nothing else
+    is dropped.
+
     HONEST LIMIT: this removes the pure-scaffolding bleed, not content-ish collisions
     like a question's 'title'/'hold' matching a 'ruler_title' / '...-hold' fact - those
     still surface and are left to the relevance floor + bm25's IDF to rank down. An
     IDF-weighted query builder (weight rare query terms over common ones) is the
     deeper fix if the floor ever proves insufficient."""
-    tokens = [t.replace('"', '') for t in raw.split() if t.strip()]
+    tokens = [t for t in (_POSSESSIVE.sub("", t.replace('"', '')) for t in raw.split()) if t.strip()]
     if not tokens:
         return '"__seren_loci_no_match__"'
     if len(tokens) <= 3:
@@ -975,9 +1194,10 @@ def _load_embedder_from_release(
 # How many rows the scoped KNN asks vec0 for. Loci is a facts table (hundreds,
 # low thousands), so 'all of them' is the honest answer and brute force over
 # that is sub-millisecond. Past the ceiling the project filter sees only the
-# nearest 10k and a scoped search can miss - acceptable for a store this was
-# never meant to be, and the ceiling exists so a runaway table can't turn every
-# query into a full sort of a million rows.
+# nearest 10k vectors (two lanes a fact: about 5k facts) and a scoped search
+# can miss - acceptable for a store this was never meant to be, and the
+# ceiling exists so a runaway table can't turn every query into a full sort
+# of a million rows.
 _KNN_CEILING = 10_000
 
 
@@ -993,15 +1213,23 @@ class _VectorFinder:
     sub-millisecond on a Nano. The vector finds the door; store.get_fact hands
     back the deterministic value behind it.
 
+    LANES: a fact holds up to _LANES vectors (see _finder_texts), at
+    vec_rowid = fact rowid * _LANES + lane. Every method that touches a fact's
+    vectors touches all of its lanes, and the KNN answers once per fact, at
+    its nearer lane.
+
     THE RECONCILE (why this class needs no migration):
         facts_vec is a DERIVED index over the canonical text in `facts`. On
-        construction we stamp the active embedder as 'model::dim' in loci_meta
-        and reconcile the on-disk index against it:
-          - stamp changed -> the index is the wrong shape (different model, a
-            different dim vec0's FLOAT[n] can't hold, or it's the FIRST vector
-            boot over a store seeded on the floor). DROP it and re-encode every
-            live fact from text. Lossless; the facts table is never touched.
-          - stamp matches -> same embedder as last boot. Backfill the live
+        construction we stamp the active embedder as 'model::dim' in loci_meta,
+        and the text recipe as 'vec_recipe', and reconcile the on-disk index
+        against both:
+          - a stamp changed -> the index is the wrong shape (different model, a
+            different dim vec0's FLOAT[n] can't hold, another recipe - the
+            one-lane index every store had before 19 Oct 2026 - or it's the
+            FIRST vector boot over a store seeded on the floor). DROP it and
+            re-encode every live fact from text. Lossless; the facts table is
+            never touched.
+          - stamps match -> same embedder as last boot. Backfill the live
             facts missing from the index (seeded while the finder was off, or a
             crash between the fact insert and the vec add) AND prune rows whose
             fact was superseded while the finder was off - set_fact/forget can
@@ -1032,27 +1260,30 @@ class _VectorFinder:
         sqlite_vec.load(conn)
         conn.enable_load_extension(False)
 
-        # Reconcile the derived index with the embedder configured RIGHT NOW.
+        # Reconcile the derived index with the embedder and recipe RIGHT NOW.
         current = f"{model_name}::{self._dim}"
-        if self._read_stamp() == current:
-            # Same embedder as the index on disk. Existing vectors are valid;
-            # just fill any gaps (and self-heal a missing table).
+        if self._read_stamp() == current and self._read_meta("vec_recipe") == _RECIPE:
+            # Same embedder and recipe as the index on disk. Existing vectors
+            # are valid; just fill any gaps (and self-heal a missing table).
             self._ensure_table()
             self._backfill_missing()
         else:
-            # Different (or first-ever) embedder for this store. The old index,
-            # if any, is the wrong shape - throw it away and rebuild from text.
+            # Different (or first-ever) embedder or recipe for this store. The
+            # old index, if any, is the wrong shape - throw it away and
+            # rebuild from text.
             self._rebuild()
             self._write_stamp(current)
+            self._write_meta("vec_recipe", _RECIPE)
 
     # -- reconcile helpers ------------------------------------------------
+    def _create_table_sql(self, if_not_exists: bool = False) -> str:
+        # vec0 table keyed by fact rowid * _LANES + lane, so add/delete stay in
+        # lockstep with live rows and a fact's lanes sit side by side.
+        return (f"CREATE VIRTUAL TABLE {'IF NOT EXISTS ' if if_not_exists else ''}facts_vec "
+                f"USING vec0(vec_rowid INTEGER PRIMARY KEY, embedding FLOAT[{self._dim}])")
+
     def _ensure_table(self) -> None:
-        # vec0 table keyed by the same rowid the facts table uses, so add/delete
-        # stay in lockstep with live rows.
-        self._conn.execute(
-            f"CREATE VIRTUAL TABLE IF NOT EXISTS facts_vec "
-            f"USING vec0(fact_rowid INTEGER PRIMARY KEY, embedding FLOAT[{self._dim}])"
-        )
+        self._conn.execute(self._create_table_sql(if_not_exists=True))
         self._conn.commit()
 
     def _rebuild(self) -> int:
@@ -1060,15 +1291,12 @@ class _VectorFinder:
         Lossless (the facts table is never touched) and cheap (Loci is small by
         design). Returns how many facts were indexed."""
         self._conn.execute("DROP TABLE IF EXISTS facts_vec")
-        self._conn.execute(
-            f"CREATE VIRTUAL TABLE facts_vec "
-            f"USING vec0(fact_rowid INTEGER PRIMARY KEY, embedding FLOAT[{self._dim}])"
-        )
+        self._conn.execute(self._create_table_sql())
         rows = self._conn.execute(
-            "SELECT rowid, key, value, why FROM facts WHERE superseded_at IS NULL"
+            "SELECT rowid, project, key, value, why FROM facts WHERE superseded_at IS NULL"
         ).fetchall()
         for r in rows:
-            self.add(r["rowid"], _finder_text(r["key"], r["value"], r["why"]))
+            self.add(r["rowid"], _finder_texts(r["project"], r["key"], r["value"], r["why"]))
         self._conn.commit()
         return len(rows)
 
@@ -1078,12 +1306,13 @@ class _VectorFinder:
         longer live. Same embedder, so existing vectors are still valid.
         Returns how many were added."""
         rows = self._conn.execute(
-            "SELECT rowid, key, value, why FROM facts "
+            "SELECT rowid, project, key, value, why FROM facts "
             "WHERE superseded_at IS NULL "
-            "  AND rowid NOT IN (SELECT fact_rowid FROM facts_vec)"
+            "  AND rowid NOT IN (SELECT vec_rowid / ? FROM facts_vec)",
+            (_LANES,),
         ).fetchall()
         for r in rows:
-            self.add(r["rowid"], _finder_text(r["key"], r["value"], r["why"]))
+            self.add(r["rowid"], _finder_texts(r["project"], r["key"], r["value"], r["why"]))
         self._prune_dead()
         # ALWAYS commit. The DELETE opens a transaction in Python's sqlite3
         # even when it removes nothing, and committing only on a change left a
@@ -1096,47 +1325,92 @@ class _VectorFinder:
         """Delete vectors for facts that are superseded or gone. Returns the
         count. The index mirrors live rows and nothing else."""
         cur = self._conn.execute(
-            "DELETE FROM facts_vec WHERE fact_rowid NOT IN "
-            "(SELECT rowid FROM facts WHERE superseded_at IS NULL)")
+            "DELETE FROM facts_vec WHERE vec_rowid / ? NOT IN "
+            "(SELECT rowid FROM facts WHERE superseded_at IS NULL)", (_LANES,))
         return cur.rowcount
 
     def _read_stamp(self) -> Optional[str]:
+        return self._read_meta("vec_embedder")
+
+    def _write_stamp(self, stamp: str) -> None:
+        self._write_meta("vec_embedder", stamp)
+
+    def _read_meta(self, key: str) -> Optional[str]:
         row = self._conn.execute(
-            "SELECT value FROM loci_meta WHERE key='vec_embedder'"
+            "SELECT value FROM loci_meta WHERE key=?", (key,)
         ).fetchone()
         return row["value"] if row else None
 
-    def _write_stamp(self, stamp: str) -> None:
+    def _write_meta(self, key: str, value: str) -> None:
         self._conn.execute(
-            "INSERT INTO loci_meta(key, value) VALUES('vec_embedder', ?) "
+            "INSERT INTO loci_meta(key, value) VALUES(?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            (stamp,),
+            (key, value),
         )
         self._conn.commit()
 
     # -- encode / index maintenance --------------------------------------
     def _encode(self, text: str) -> bytes:
-        import struct
-        vec = self._model.encode([text], normalize_embeddings=True)[0]
-        return struct.pack(f"{len(vec)}f", *vec)
+        return self._encode_many([text])[0]
 
-    def add(self, rowid: int, text: str) -> None:
-        self._conn.execute(
-            "INSERT OR REPLACE INTO facts_vec(fact_rowid, embedding) VALUES(?, ?)",
-            (rowid, self._encode(text)),
-        )
+    def _encode_many(self, texts: list[str]) -> list[bytes]:
+        import struct
+        vecs = self._model.encode(list(texts), normalize_embeddings=True)
+        return [struct.pack(f"{len(v)}f", *v) for v in vecs]
+
+    def add(self, rowid: int, texts: list[str]) -> None:
+        """Index one fact: a vector per lane (_finder_texts), every lane it
+        held before replaced, so a fact that lost its why loses that lane."""
+        self.delete(rowid)
+        for lane, blob in enumerate(self._encode_many(texts[:_LANES])):
+            self._conn.execute(
+                "INSERT INTO facts_vec(vec_rowid, embedding) VALUES(?, ?)",
+                (rowid * _LANES + lane, blob),
+            )
 
     def delete(self, rowid: int) -> None:
-        self._conn.execute("DELETE FROM facts_vec WHERE fact_rowid=?", (rowid,))
+        """Drop every lane of one fact."""
+        for lane in range(_LANES):
+            self._conn.execute("DELETE FROM facts_vec WHERE vec_rowid=?", (rowid * _LANES + lane,))
+
+    def window_notes(self, project: str, key: str, value: str, why: Optional[str]) -> list[str]:
+        """Which part of a fact runs past the embedder's window, said in
+        tokens of the embedder's own tokenizer. The value part (its address +
+        value) past the window means words no vector holds; the why has its
+        own lane, so a long why only matters when that lane itself runs past.
+        Silent for an embedder that names no window or tokenizer (a stub), and
+        never a reason to fail a write."""
+        limit = getattr(self._model, "max_seq_length", None)
+        tok = getattr(self._model, "tokenizer", None)
+        if not limit or tok is None:
+            return []
+        head = "  ".join([key] if project == FUNDAMENTALS else [project, key])
+        notes = []
+        for part, text in (("value", f"{head}  {value}"), ("why", f"{head}  {why}" if why else None)):
+            if not text:
+                continue
+            try:
+                n = len(tok(text, add_special_tokens=True, truncation=False, verbose=False)["input_ids"])
+            except Exception:  # noqa: BLE001 - a note is never worth a failed write
+                return notes
+            if n > limit:
+                notes.append(
+                    f"the finder reads the first {limit} tokens of the {part} part (its address + {part}); this one runs "
+                    f"to {n}, so its last {n - limit} are in no vector (lexical search still sees every word). "
+                    f"A fact of one claim fits; split it if it holds several.")
+        return notes
 
     def search(self, query: str, k: int,
                scopes: list[str] | None = None) -> list[tuple[str, float]]:
         """KNN -> [(fact_id, distance)], nearest first, at most k, all of
-        them live and (when scopes is given) inside those projects.
+        them live and (when scopes is given) inside those projects. A fact
+        answers once, at its nearer lane.
 
         The vec0 MATCH returns its k nearest BEFORE SQL sees the join, so the
         project filter has to run over the whole neighbourhood: we ask vec0 for
         every row it holds (capped at _KNN_CEILING) and LIMIT after filtering.
+        The LIMIT is k * _LANES vectors, which always holds k distinct facts
+        when there are k to hold, and the dedupe keeps each fact's first.
         scopes=None means no project filter; scopes=[] means nothing is in scope."""
         if scopes is not None and not scopes:
             return []
@@ -1149,13 +1423,17 @@ class _VectorFinder:
             params.extend(scopes)
         rows = self._conn.execute(
             "SELECT f.id AS id, v.distance AS distance "
-            "FROM facts_vec v JOIN facts f ON f.rowid = v.fact_rowid "
+            "FROM facts_vec v JOIN facts f ON f.rowid = v.vec_rowid / ? "
             "WHERE v.embedding MATCH ? AND k = ? "
             "  AND " + " AND ".join(clauses) + " "
             "ORDER BY v.distance LIMIT ?",
-            (self._encode(query), min(total, _KNN_CEILING), *params, k),
+            (_LANES, self._encode(query), min(total, _KNN_CEILING), *params, k * _LANES),
         ).fetchall()
-        return [(r["id"], float(r["distance"])) for r in rows]
+        out: dict[str, float] = {}
+        for r in rows:
+            if r["id"] not in out:
+                out[r["id"]] = float(r["distance"])
+        return list(out.items())[:k]
 
 
 # ── the hybrid finder (vector + FTS5, fused via RRF) ────────────────────

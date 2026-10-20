@@ -13,7 +13,9 @@ import asyncio
 from fastapi import APIRouter, Body, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from ..models.schemas import FactWrite, FigureWrite, FUNDAMENTALS
+from typing import Optional
+
+from ..models.schemas import FactMove, FactWrite, FigureWrite, FUNDAMENTALS
 
 router = APIRouter(prefix="/fact", tags=["facts"])
 
@@ -23,8 +25,12 @@ async def set_fact(request: Request, w: FactWrite = Body(...)):
     """Set (or replace) the live value for (project, key).
 
     If a live value already existed it is superseded - kept as history, never
-    blended. The response names the superseded id (or null) so the caller can
-    see whether this was a fresh write or a replacement.
+    blended, with `why_changed` kept on it. The response names the superseded
+    id (or null) so the caller can see whether this was a fresh write or a
+    replacement, echoes the `why_changed` it kept on that retired row (null
+    when nothing was kept: the field's presence says this store keeps
+    reasons), and carries the store's `notes` on the write (never a refusal:
+    the fact is set either way).
     """
     store = request.app.state.store
     prior = store.get_fact(w.project, w.key)   # was there a live value?
@@ -33,6 +39,30 @@ async def set_fact(request: Request, w: FactWrite = Body(...)):
         "ok": True,
         "fact": fact.model_dump(),
         "superseded": prior.id if prior else None,
+        "why_changed": ((w.why_changed or "").strip() or None) if prior else None,
+        "notes": store.write_notes(w, replaced=prior is not None),
+    }
+
+
+@router.post("/move")
+async def move_fact(request: Request, m: FactMove = Body(...)):
+    """Move the live value of (project, key) to (to_project, to_key). The old
+    address is retired with `why_changed`; the history follows. 404 with no
+    live value to move, 409 when the target already holds one or the move
+    goes nowhere."""
+    store = request.app.state.store
+    try:
+        moved = store.move_fact(m)
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    if moved is None:
+        raise HTTPException(404, f"no live fact to move for project={m.project!r} key={m.key!r}")
+    return {
+        "ok": True,
+        "fact": moved.model_dump(),
+        "moved_from": {"project": m.project, "key": m.key},
+        "notes": store.write_notes(
+            FactWrite(project=moved.project, key=moved.key, value=moved.value, why=moved.why), replaced=False),
     }
 
 
@@ -138,12 +168,14 @@ async def drop_from_fact(request: Request, digest: str, key: str, project: str =
 
 
 @router.delete("")
-async def forget_fact(request: Request, key: str, project: str = FUNDAMENTALS):
+async def forget_fact(request: Request, key: str, project: str = FUNDAMENTALS,
+                      why_changed: Optional[str] = None):
     """Retire the live value for a key (soft supersede - 'forget is a flag, not
-    a scalpel'). The row stays as history; it just stops being the live answer.
-    404 if there was no live value to retire."""
+    a scalpel'). The row stays as history, with `why_changed` if given; it
+    just stops being the live answer. 404 if there was no live value to
+    retire."""
     store = request.app.state.store
-    ok = store.forget(project, key)
+    ok = store.forget(project, key, why_changed)
     if not ok:
         raise HTTPException(404, f"no live fact to forget for project={project!r} key={key!r}")
     return {"ok": True, "forgotten": {"project": project, "key": key}}

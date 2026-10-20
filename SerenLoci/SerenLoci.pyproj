@@ -50,12 +50,16 @@
     <Compile Include="tests\test_embedder_reconcile.py" />
     <Compile Include="tests\test_figures.py" />
     <Compile Include="tests\test_fts_stopword_bleed.py" />
+    <Compile Include="tests\test_fts_possessive.py" />
     <Compile Include="tests\test_hybrid_finder.py" />
+    <Compile Include="tests\test_keeping.py" />
     <Compile Include="tests\test_mcp_mount.py" />
     <Compile Include="tests\test_mcp_tools.py" />
+    <Compile Include="tests\test_project_in_text.py" />
     <Compile Include="tests\test_routes.py" />
     <Compile Include="tests\test_store.py" />
     <Compile Include="tests\test_vector_sql.py" />
+    <Compile Include="tests\test_why_lane.py" />
   </ItemGroup>
   <ItemGroup>
     <Content Include="LICENSE" />

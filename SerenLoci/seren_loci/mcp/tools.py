@@ -21,9 +21,18 @@ TOOL ROSTER:
     search_loci     discovery: exact-key first, then the finder (vector if an
                     embedder is configured, else FTS5 lexical)
     forget_fact     retire a key's live value (soft supersede - 'a flag, not a
-                    scalpel'); kept as history
-    fact_history    every value a key has ever held, newest first
+                    scalpel'); kept as history, with why it was retired
+    move_fact       re-address a fact (another project or key); the old
+                    address retired with the reason, the history following
+    fact_history    every value a key has ever held, newest first, and why
+                    each one changed
     list_facts      scan a whole scope (a project, or everything)
+
+    The descriptions below are how the keeping travels: whoever lives in a
+    Loci reads them, so they say what Loci is for (anything held as fact,
+    not only code), one claim per key, and the what and why here with the
+    how left to the code (19 Oct 2026: set_fact called itself "coding/logic
+    knowledge", and the store filled with changelogs).
 
     keep_with_fact  cite an exhibit on the live value (a wiring photo, a
                     screenshot of the error) - set_fact takes `keep` too
@@ -49,7 +58,7 @@ from mcp.server.fastmcp import FastMCP, Image
 from seren_sinew.blobs import choose_shown, keep_each
 
 from ..config import LociConfig
-from ..models.schemas import FactWrite, FUNDAMENTALS, Source
+from ..models.schemas import FactMove, FactWrite, FUNDAMENTALS, Source
 from ..store import LociStore
 
 CITE = "figure:"            # keep=["figure:<digest>"]: cite a figure the store already holds
@@ -69,17 +78,35 @@ class LociToolImpl:
 
     # -- write ------------------------------------------------------------
     def set_fact(self, key: str, value: str, why: Optional[str] = None,
-                 project: str = FUNDAMENTALS, keep: Optional[list[str]] = None) -> dict:
-        """Set (or replace) a fact in the left brain - an addressable, durable
-        piece of coding/logic knowledge.
+                 project: str = FUNDAMENTALS, keep: Optional[list[str]] = None,
+                 why_changed: Optional[str] = None) -> dict:
+        """Set (or replace) a fact in the left brain: something you hold as
+        true and want to find again by its address. Anything you deal with
+        as fact belongs here - a convention, a decision, a contract between
+        you and someone, a thought of your own you mean to keep - not only
+        code.
 
-        project defaults to '*' (fundamentals: cross-project truths like
-        'camelCase is life'); pass a concrete project name for a per-project
-        convention. If a live value already exists for this (project, key) it
-        is SUPERSEDED - kept as history, never blended into the new value.
+        ONE CLAIM PER KEY. A fact holding several claims runs past the
+        finder's window (the answer's `notes` say when), and has to be
+        rewritten whole when one of them changes; small facts are found and
+        superseded one at a time. Keep the WHAT and the WHY here and leave
+        the HOW (file names, function names, versions) to the code and its
+        docs, with the fact pointing there: the how goes stale the moment the
+        code moves, and nothing tells the fact.
+
+        project defaults to '*' (fundamentals: true everywhere). Any other
+        name is a scope of your choosing - a project, a person, a place. If a
+        live value already exists for this (project, key) it is SUPERSEDED -
+        kept as history, never blended into the new value.
 
         `why` is not decoration: it's the hard-won reason the fact is shaped
-        this way, and it's searchable. Always include it when there is one.
+        this way, and it's searchable. Always include it when there is one,
+        and keep it about the fact.
+
+        `why_changed`: when this replaces a live value, why it changed ("moved
+        to the NUC", "the first reading was wrong"). It is kept on the old
+        value in history, so the new why stays about the fact; fact_history
+        shows it.
 
         `keep`: exhibits this value cites - a wiring photo, a screenshot of
         the error, a diagram. Paths on this box or URLs under the shelves
@@ -88,16 +115,23 @@ class LociToolImpl:
         `superseded_figures`: a new value does not inherit them, it cites
         what it cites). The answer lists what was kept and what was refused
         and why; the fact is set either way.
+
+        `notes` in the answer is what the store saw in the write: no why, a
+        part past the finder's window, a project name that reads as one you
+        already have. Never a refusal; yours to act on or not.
         """
         prior = self.store.get_fact(project, key)
-        fact = self.store.set_fact(FactWrite(
-            project=project, key=key, value=value, why=why, source=Source.MODEL))
+        w = FactWrite(project=project, key=key, value=value, why=why,
+                      why_changed=why_changed, source=Source.MODEL)
+        fact = self.store.set_fact(w)
         out: dict[str, Any] = {
             "ok": True,
             "id": fact.id,
             "project": project,
             "key": key,
             "superseded": prior.id if prior else None,
+            "why_changed": ((why_changed or "").strip() or None) if prior else None,
+            "notes": self.store.write_notes(w, replaced=prior is not None),
         }
         if prior is not None and prior.figures:
             out["superseded_figures"] = [f.model_dump() for f in prior.figures]
@@ -220,8 +254,9 @@ class LociToolImpl:
                     project: Optional[str] = None,
                     include_fundamentals: bool = True,
                     include_superseded: bool = False) -> dict:
-        """Search the left brain alone, when you DON'T know the exact key -
-        the associative jump ('that CUDA thing', 'the brace rule').
+        """Search the left brain alone - your facts, contracts and
+        conventions - when you DON'T know the exact key: the associative jump
+        ('that CUDA thing', 'the brace rule', 'what did we agree about bed').
 
         WHEN A CORPUS CALLOSUM IS CONNECTED, ITS `search` COMES FIRST: one
         call reaches these facts AND the right brain's episodic memory,
@@ -233,12 +268,16 @@ class LociToolImpl:
 
         An exact key match leads at score 1.0; otherwise the finder runs
         (semantic vector search if an embedder is configured, else FTS5 lexical
-        over key/value/why). project=None searches every scope; a concrete
-        project narrows to it (and folds in fundamentals unless you turn that
-        off). Every hit carries a normalized 0..1 score and a match_kind.
-        include_superseded=true folds history in - every retired value of a
-        matching key, and lexical hits on retired rows - each marked live=false
-        with its superseded_at, and never ranked above the live value.
+        over project/key/value/why; the vectors hold a fact's why on a lane of
+        its own, so a long value cannot push it out). The project is part of
+        what the finder reads, so a question naming its subject ('Laionan's
+        title') finds that project's fact even unscoped. project=None searches every
+        scope; a concrete project narrows to it (and folds in fundamentals
+        unless you turn that off). Every hit carries a normalized 0..1 score
+        and a match_kind. include_superseded=true folds history in - every
+        retired value of a matching key, and lexical hits on retired rows -
+        each marked live=false with its superseded_at and why_changed, and
+        never ranked above the live value.
         """
         hits, finder = self.store.search(
             query, project=project, n_results=n_results,
@@ -252,12 +291,14 @@ class LociToolImpl:
         }
 
     # -- retire -----------------------------------------------------------
-    def forget_fact(self, key: str, project: str = FUNDAMENTALS) -> dict:
+    def forget_fact(self, key: str, project: str = FUNDAMENTALS,
+                    why_changed: Optional[str] = None) -> dict:
         """Retire the live value for a (project, key) - a soft supersede, 'a
         flag, not a scalpel'. The row stays as history; it just stops being the
-        live answer, and the key is free to be set fresh later. Returns ok:false
-        if there was no live value to retire."""
-        ok = self.store.forget(project, key)
+        live answer, and the key is free to be set fresh later. `why_changed`
+        says why it no longer holds, and stays with it in history. Returns
+        ok:false if there was no live value to retire."""
+        ok = self.store.forget(project, key, why_changed)
         return {
             "ok": ok,
             "project": project,
@@ -266,11 +307,47 @@ class LociToolImpl:
                     else "no live value to retire",
         }
 
+    def move_fact(self, key: str, to_project: Optional[str] = None, to_key: Optional[str] = None,
+                  project: str = FUNDAMENTALS, why_changed: Optional[str] = None) -> dict:
+        """Move the live value of a (project, key) to another address: a
+        different project, a different key, or both (either defaults to where
+        it is now). For tidying - two project names that mean one scope
+        ('seren' and 'Seren'), a fact filed under the wrong one, a key that
+        says the wrong thing.
+
+        The old address is retired with `why_changed` ("one scope, one name")
+        and its history stays as it was written; the new address carries the
+        same value, why and figures, and fact_history there follows the move
+        back. Refused when the target already holds a live value: supersede
+        or move that one first, nothing is ever blended. A whole scope moves
+        a key at a time (list_facts(project=...) gives the keys).
+        """
+        try:
+            moved = self.store.move_fact(FactMove(project=project, key=key, to_project=to_project,
+                                                  to_key=to_key, why_changed=why_changed))
+        except ValueError as e:
+            return {"ok": False, "project": project, "key": key, "error": str(e)}
+        if moved is None:
+            return {"ok": False, "project": project, "key": key, "error": "no live value to move"}
+        return {
+            "ok": True,
+            "id": moved.id,
+            "project": moved.project,
+            "key": moved.key,
+            "moved_from": {"project": project, "key": key},
+            "notes": self.store.write_notes(
+                FactWrite(project=moved.project, key=moved.key, value=moved.value, why=moved.why),
+                replaced=False),
+        }
+
     # -- history ----------------------------------------------------------
     def fact_history(self, key: str, project: str = FUNDAMENTALS) -> dict:
         """Every value a (project, key) has ever held, newest first - the audit
         trail the strict-supersede rule preserves. Useful for 'what did we used
-        to think the right answer was, and why did it change'."""
+        to think the right answer was, and why did it change': a retired row
+        carries `why_changed` when whoever retired it said. A fact that was
+        moved here brings the history from its old address along, each row
+        keeping the project and key it was written under."""
         rows = self.store.get_history(project, key)
         return {
             "project": project,
@@ -283,8 +360,9 @@ class LociToolImpl:
     def list_facts(self, project: Optional[str] = None,
                    include_superseded: bool = False) -> dict:
         """List facts in scope - a whole project, or everything (project=None).
-        For surveying what the left brain knows. Pass include_superseded=true to
-        fold in history rows too."""
+        For surveying what you hold as fact, and for tidying it: facts that
+        hold several claims, project names that mean one scope, a why gone
+        stale. Pass include_superseded=true to fold in history rows too."""
         facts = self.store.list_facts(
             project=project, include_superseded=include_superseded)
         return {"count": len(facts), "facts": [f.model_dump() for f in facts]}
@@ -304,6 +382,7 @@ def register_tools(mcp: FastMCP, store: LociStore,
     mcp.tool()(impl.get_fact)
     mcp.tool()(impl.search_loci)
     mcp.tool()(impl.forget_fact)
+    mcp.tool()(impl.move_fact)
     mcp.tool()(impl.fact_history)
     mcp.tool()(impl.list_facts)
     mcp.tool()(impl.keep_with_fact)

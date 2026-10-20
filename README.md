@@ -97,10 +97,11 @@ curl -X POST localhost:7422/search -H 'content-type: application/json' \
 
 | Method | Path             | What                                                   |
 |--------|------------------|--------------------------------------------------------|
-| POST   | `/fact`          | Set/replace a fact (strict supersede). Names the superseded id, or null. |
+| POST   | `/fact`          | Set/replace a fact (strict supersede, `why_changed` kept on the old value). Names the superseded id, or null, and carries `notes`. |
 | GET    | `/fact`          | The live value for `?project=&key=` (project defaults to `*`). 404 if none. |
-| GET    | `/fact/history`  | Every value a key has held, newest first.              |
-| DELETE | `/fact`          | Retire (soft-supersede) the live value for a key.      |
+| GET    | `/fact/history`  | Every value a key has held, newest first, following moves back. |
+| DELETE | `/fact`          | Retire (soft-supersede) the live value for a key (`?why_changed=`). |
+| POST   | `/fact/move`     | Move the live value to `{to_project, to_key}` with `why_changed`. 404 nothing live, 409 target taken. |
 | GET    | `/facts`         | List facts in scope (`?project=&include_superseded=`). |
 | GET    | `/counts`        | `{live, history, projects}`.                           |
 | POST   | `/search`        | Exact + finder discovery, ranked.                      |

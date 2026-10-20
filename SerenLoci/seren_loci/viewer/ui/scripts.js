@@ -151,9 +151,14 @@ function renderFacts() {
     hydrateFigures(el);
 }
 
+// why a retired value stopped being the answer, when whoever retired it said
+function changedLine(f) {
+    return f.why_changed ? `<div class="why"><b>why it changed</b> · ${escapeHtml(f.why_changed)}</div>` : "";
+}
+
 function factCard(f) {
     const dim = f.superseded_at ? " dim" : "";
-    const why = f.why ? `<div class="why"><b>why</b> · ${escapeHtml(f.why)}</div>` : "";
+    const why = (f.why ? `<div class="why"><b>why</b> · ${escapeHtml(f.why)}</div>` : "") + changedLine(f);
     const supTag = f.superseded_at ? `<span class="tag superseded">superseded</span>` : "";
     // a superseded row's figures are history: the live value's are served, the rest are counted
     const figs = f.superseded_at ? (f.figures && f.figures.length ? `<div class="figs"><span class="fig chip">${f.figures.length} figure${f.figures.length === 1 ? "" : "s"} in history</span></div>` : "")
@@ -198,7 +203,7 @@ async function runSearch() {
 }
 function hitRow(h) {
     const pct = Math.round((h.score || 0) * 100);
-    const why = h.why ? `<div class="why"><b>why</b> · ${escapeHtml(h.why)}</div>` : "";
+    const why = (h.why ? `<div class="why"><b>why</b> · ${escapeHtml(h.why)}</div>` : "") + changedLine(h);
     const dist = (h.raw_distance != null) ? ` · d=${h.raw_distance}` : "";
     const figs = h.figures ? ` · ${h.figures} figure${h.figures === 1 ? "" : "s"}` : "";
     return `<div class="card"><div class="hit">
@@ -236,11 +241,14 @@ async function runHistory() {
             const live = !f.superseded_at;
             const tag = live ? `<span class="tag" style="color:var(--accent);border-color:var(--accent-dim)">live</span>`
                 : `<span class="tag superseded">superseded</span>`;
-            const why = f.why ? `<div class="why"><b>why</b> · ${escapeHtml(f.why)}</div>` : "";
+            const why = (f.why ? `<div class="why"><b>why</b> · ${escapeHtml(f.why)}</div>` : "") + changedLine(f);
             const figs = live ? figuresStrip(f)
                 : (f.figures && f.figures.length ? `<div class="figs"><span class="fig chip">${f.figures.length} figure${f.figures.length === 1 ? "" : "s"} kept with this value</span></div>` : "");
+            // a row from before a move keeps the address it was written under
+            const where = (f.project !== data.project || f.key !== data.key)
+                ? `<span class="tag">was ${escapeHtml(f.project)} / ${escapeHtml(f.key)}</span>` : "";
             return `<div class="card${live ? "" : " dim"}">
-            <div class="foot" style="margin:0 0 8px"><span>#${data.count - i}</span>${tag}<span>${relAge(f.created_at)}</span></div>
+            <div class="foot" style="margin:0 0 8px"><span>#${data.count - i}</span>${tag}${where}<span>${relAge(f.created_at)}</span></div>
             <div class="v">${escapeHtml(f.value)}</div>
             ${why}
             ${figs}

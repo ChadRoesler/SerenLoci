@@ -20,6 +20,17 @@ old ones kept as history, NEVER blended.
 hard-won reason a fact is shaped the way it is ("GGML_CUDA_NO_VMM must be set
 at COMPILE time - the env var isn't honored at runtime"). The value tells you
 what; the why is what stops you re-learning it the painful way.
+
+A fact is anything its inhabitant holds as fact: a project's convention, a
+decision, a contract between two people, a thought of their own they mean to
+keep. Whoever lives in a Loci keeps it; the store tells them what it sees
+(write notes) and never rewrites a fact on its own.
+
+`why_changed` is the other reason: why a value stopped being the live answer
+(superseded, retired, moved). It sits on the RETIRED row, so the new value's
+why stays about the fact and the history reads like a log (19 Oct 2026: with
+nowhere else to go, change notes had been landing in the new why and fattening
+it).
 """
 from __future__ import annotations
 
@@ -92,6 +103,10 @@ class Fact(BaseModel):
     # default, never blended into the new value.
     superseded_at: Optional[float] = None
     superseded_by: Optional[str] = None
+    # Why this row stopped being the live answer, when whoever retired it
+    # said. Only ever set on a retired row. A superseded_by that names a row
+    # at another (project, key) is a move.
+    why_changed: Optional[str] = None
 
     extra: dict[str, Any] = Field(default_factory=dict)
     # The exhibits this row cites: the rows, never the bytes. look_at_fact
@@ -105,13 +120,30 @@ class Fact(BaseModel):
 
 class FactWrite(BaseModel):
     """Inbound payload to set/replace a fact. No id/timestamps - the store
-    assigns those. project defaults to fundamentals if omitted."""
+    assigns those. project defaults to fundamentals if omitted.
+
+    why_changed: when this replaces a live value, why it changed. Kept on the
+    value it replaces; with nothing to replace, there is nowhere to keep it
+    (a write note says so)."""
     project: str = FUNDAMENTALS
     key: str
     value: str
     why: Optional[str] = None
+    why_changed: Optional[str] = None
     source: Source = Source.USER
     extra: dict[str, Any] = Field(default_factory=dict)
+
+
+class FactMove(BaseModel):
+    """Input shape for POST /fact/move: the live value at (project, key) goes
+    to (to_project, to_key), either defaulting to where it is now. The old
+    address is retired with why_changed; its history stays where it was
+    written and the new address's history follows the move back to it."""
+    project: str = FUNDAMENTALS
+    key: str
+    to_project: Optional[str] = None
+    to_key: Optional[str] = None
+    why_changed: Optional[str] = None
 
 
 class FigureWrite(BaseModel):
@@ -156,6 +188,7 @@ class SearchHit(BaseModel):
     # the current answer; a retired one says so and carries when it retired.
     live: bool = True
     superseded_at: Optional[float] = None
+    why_changed: Optional[str] = None   # a retired hit's reason, when one was given
     # How many exhibits the fact cites. A count: a hit stays light, and
     # look_at_fact shows them.
     figures: int = 0

@@ -285,7 +285,8 @@ def test_a_background_warm_up_serves_lexical_then_turns_hybrid(tmp_db, monkeypat
     assert kind == "lexical" and [h.key for h in hits] == ["early"]
     gate.set()
     assert s.wait_for_finder(10) and s.finder_kind == "hybrid" and s.finder_state == "ready"
-    assert s._conn.execute("SELECT COUNT(*) FROM facts_vec").fetchone()[0] == 1, "the early fact was backfilled"
+    assert s._conn.execute("SELECT COUNT(DISTINCT vec_rowid / ?) FROM facts_vec",
+                           (store_mod._LANES,)).fetchone()[0] == 1, "the early fact was backfilled"
     s.close()
 
 
