@@ -1191,14 +1191,13 @@ def _load_embedder_from_release(
     return SentenceTransformer(str(local_model_dir), device=device)
 
 
-# How many rows the scoped KNN asks vec0 for. Loci is a facts table (hundreds,
-# low thousands), so 'all of them' is the honest answer and brute force over
-# that is sub-millisecond. Past the ceiling the project filter sees only the
-# nearest 10k vectors (two lanes a fact: about 5k facts) and a scoped search
-# can miss - acceptable for a store this was never meant to be, and the
-# ceiling exists so a runaway table can't turn every query into a full sort
-# of a million rows.
-_KNN_CEILING = 10_000
+# The most rows a vec0 KNN will answer for: sqlite-vec refuses a larger k
+# ("k value in knn query too large"; SQLITE_VEC_VEC0_K_MAX in its build). The
+# search asks the KNN for every row while the index fits under it, and past it
+# measures the in-scope rows itself (see _VectorFinder.search). Until 20 Oct
+# 2026 this was a ceiling of 10,000, so every search on a store past 4,096
+# vectors failed: Probe's 2,822 facts made 5,644.
+_VEC0_K_MAX = 4096
 
 
 # ── the additive vector finder ──────────────────────────────────────────────
@@ -1241,9 +1240,14 @@ class _VectorFinder:
     then can SQL filter by project. Asking for k=n from a store where another
     project dominates the neighbourhood returned n rows from the wrong project,
     filtered them away, and reported nothing - a small project became
-    unsearchable. So the KNN asks for every row (Loci is small by design; see
-    _KNN_CEILING) and the project filter runs before the LIMIT. Brute force
-    over the whole table is what sqlite-vec does anyway, so this costs nothing.
+    unsearchable. So the KNN asks for every row and the project filter runs
+    before the LIMIT. Brute force over the whole table is what sqlite-vec does
+    anyway, so this costs nothing. vec0 answers a KNN for at most _VEC0_K_MAX
+    rows, though, so past that the search skips the KNN and measures every
+    in-scope vector with vec_distance_l2 - the same brute force and the same
+    distance, over the filtered rows. Every search is scoped (one with no
+    project searches every project that has facts), so a ceiling instead
+    would bring the small-project miss back for every store past it.
     """
 
     def __init__(self, conn: sqlite3.Connection, model_name: str, device: str,
@@ -1408,7 +1412,10 @@ class _VectorFinder:
 
         The vec0 MATCH returns its k nearest BEFORE SQL sees the join, so the
         project filter has to run over the whole neighbourhood: we ask vec0 for
-        every row it holds (capped at _KNN_CEILING) and LIMIT after filtering.
+        every row it holds and LIMIT after filtering. Past _VEC0_K_MAX rows
+        vec0 refuses that, so we filter first and measure each in-scope vector
+        ourselves (vec_distance_l2: facts_vec declares no distance_metric, so
+        its MATCH is L2 too).
         The LIMIT is k * _LANES vectors, which always holds k distinct facts
         when there are k to hold, and the dedupe keeps each fact's first.
         scopes=None means no project filter; scopes=[] means nothing is in scope."""
@@ -1421,14 +1428,23 @@ class _VectorFinder:
         if scopes is not None:
             clauses.append(f"f.project IN ({','.join('?' for _ in scopes)})")
             params.extend(scopes)
-        rows = self._conn.execute(
-            "SELECT f.id AS id, v.distance AS distance "
-            "FROM facts_vec v JOIN facts f ON f.rowid = v.vec_rowid / ? "
-            "WHERE v.embedding MATCH ? AND k = ? "
-            "  AND " + " AND ".join(clauses) + " "
-            "ORDER BY v.distance LIMIT ?",
-            (_LANES, self._encode(query), min(total, _KNN_CEILING), *params, k * _LANES),
-        ).fetchall()
+        if total <= _VEC0_K_MAX:
+            rows = self._conn.execute(
+                "SELECT f.id AS id, v.distance AS distance "
+                "FROM facts_vec v JOIN facts f ON f.rowid = v.vec_rowid / ? "
+                "WHERE v.embedding MATCH ? AND k = ? "
+                "  AND " + " AND ".join(clauses) + " "
+                "ORDER BY v.distance LIMIT ?",
+                (_LANES, self._encode(query), total, *params, k * _LANES),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT f.id AS id, vec_distance_l2(v.embedding, ?) AS distance "
+                "FROM facts_vec v JOIN facts f ON f.rowid = v.vec_rowid / ? "
+                "WHERE " + " AND ".join(clauses) + " "
+                "ORDER BY distance LIMIT ?",
+                (self._encode(query), _LANES, *params, k * _LANES),
+            ).fetchall()
         out: dict[str, float] = {}
         for r in rows:
             if r["id"] not in out:
