@@ -251,3 +251,64 @@ def test_the_viewer_shows_figures_and_the_backup_panel_and_counts_stay_a_closed_
         assert "figuresStrip" in page and "/fact/figures/" in page, "a fact's exhibits are shown, fetched through the token"
         assert "renderBackups" in page and 'api("/stores")' in page, "the same backup panel every Seren viewer has"
         assert set(c.get("/counts").json()) == {"live", "history", "projects", "figures"}, "the overview's numbers: a closed set"
+
+
+# ── the Figures hall: figure first (20 Oct 2026) ───────────────────────────
+# Chad: "figures tab and modal view, and figures viewable in a loci key.
+# mimicking what we have for eidetic memory for memory."
+
+def test_the_gallery_lists_every_figure_once_with_what_cites_it(tmp_path):
+    g = _gallery(tmp_path)
+    with TestClient(create_app(_cfg(tmp_path, sources=[g]))) as c:
+        store = c.app.state.store
+        assert store.figure_gallery() == []
+        assert c.get("/figures").json() == {"ok": True, "enabled": True, "count": 0, "bytes": 0, "figures": []}
+
+        c.post("/fact", json={"key": "k", "value": "v1", "project": "p"})
+        d = c.post("/fact/figures", json={"project": "p", "key": "k", "source": str(g / "wiring.png"), "caption": "the wiring"}).json()["figure"]["digest"]
+        c.post("/fact", json={"key": "j", "value": "x", "project": "p"})
+        dj = c.post("/fact/figures", json={"project": "p", "key": "j", "source": str(g / "screen.jpg")}).json()["figure"]["digest"]
+        # the value is superseded; the new one cites the old exhibit again: one figure, two rows
+        c.post("/fact", json={"key": "k", "value": "v2", "project": "p"})
+        c.post("/fact/figures", json={"project": "p", "key": "k", "source": f"figure:{d}"})
+
+        body = c.get("/figures").json()
+        assert body["ok"] and body["enabled"] and body["count"] == 2 and body["bytes"] == len(PNG) + len(JPG)
+        assert [p["digest"] for p in body["figures"]] == [dj, d], "newest kept first; cited again is not kept again"
+        fig = body["figures"][1]
+        assert fig["caption"] == "the wiring" and fig["file"] == f"figure-{d[:8]}.png" and fig["mime"] == "image/png"
+        assert fig["via"] == {"project": "p", "key": "k"}, "the bytes come through the live citing fact"
+        assert fig["missing"] is False
+        assert [(f["value"], f["live"]) for f in fig["facts"]] == [("v1", False), ("v2", True)]
+        assert c.get(f"/fact/figures/{d}", params=fig["via"]).content == PNG
+
+        # retire the live value: history alone cites it, so there is nothing to serve it through
+        c.delete("/fact", params={"project": "p", "key": "k"})
+        fig = next(p for p in c.get("/figures").json()["figures"] if p["digest"] == d)
+        assert fig["via"] is None and [f["live"] for f in fig["facts"]] == [False, False]
+        assert [p["digest"] for p in c.get("/figures", params={"include_history": "false"}).json()["figures"]] == [dj]
+        assert c.get("/figures", params={"limit": 1, "offset": 1}).json()["figures"][0]["digest"] == d
+
+        # the bytes gone from the folder: the gallery says so, the rows still name it
+        folder = tmp_path / "loci" / "figures"
+        (folder / dj[:2] / dj).unlink()
+        fig = next(p for p in c.get("/figures").json()["figures"] if p["digest"] == dj)
+        assert fig["missing"] is True and fig["via"] == {"project": "p", "key": "j"}
+
+
+def test_the_store_that_keeps_nothing_still_answers_the_gallery(tmp_path):
+    cfg = _cfg(tmp_path)
+    cfg.figures.enabled = False
+    with TestClient(create_app(cfg)) as c:
+        body = c.get("/figures").json()
+        assert body == {"ok": True, "enabled": False, "count": 0, "bytes": 0, "figures": []}
+
+
+def test_the_viewer_has_a_figures_hall(tmp_path):
+    with TestClient(create_app(_cfg(tmp_path))) as c:
+        page = c.get("/viewer").text
+        assert 'data-tab="figures"' in page and 'id="figureGallery"' in page and "loadFigures" in page
+        assert 'api("/figures?' in page and "figureTile" in page, "the hall reads the gallery route"
+        assert "openFigure" in page and "cited by" in page, "open a figure, see the facts that cite it"
+        assert "pic-head" in page and "pic-close" in page, "the modal's header row and square close: the family's shape"
+        assert "data-open-fig" in page, "a figure on a fact's strip opens the same modal"

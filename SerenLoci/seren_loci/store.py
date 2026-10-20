@@ -627,6 +627,47 @@ class LociStore:
         return _row_to_figure(row), self.figures.open(digest)
 
     @_serialized
+    def figure_gallery(self) -> list[dict[str, Any]]:
+        """Figure first: every figure once, the newest kept first, each with
+        every fact row that cites it. The viewer's Figures hall, the shape of
+        Memory's eidetic gallery (Chad, 20 Oct 2026: "mimicking what we have
+        for eidetic memory"). A figure rides on more than one row when a new
+        value cites the old one again (`figure:<digest>`), so the gallery is
+        keyed by the digest and what cites it is a list.
+
+        `via` is the (project, key) the bytes are fetched through - the first
+        LIVE citing fact, because /fact/figures/{digest} only ever serves
+        them through a live fact - or None when only history cites it.
+        `missing` says the bytes are gone from the folder (or the store keeps
+        no figures)."""
+        from seren_sinew.blobs import file_name
+        rows = self._conn.execute(
+            "SELECT g.digest, g.bytes, g.mime, g.caption, g.source, g.kept_at, "
+            "       f.id, f.project, f.key, f.value, f.created_at, f.superseded_at "
+            "FROM figures g JOIN facts f ON f.id = g.fact_id "
+            "ORDER BY g.kept_at, g.digest, f.created_at").fetchall()
+        figs: dict[str, dict[str, Any]] = {}
+        for r in rows:
+            p = figs.setdefault(r["digest"], {
+                "digest": r["digest"], "mime": r["mime"], "bytes": r["bytes"],
+                "caption": None, "source": None, "kept_at": None,
+                "file": file_name("figure", r["digest"], r["mime"]), "via": None, "facts": []})
+            p["caption"] = p["caption"] or r["caption"]
+            p["source"] = p["source"] or r["source"]
+            if p["kept_at"] is None or r["kept_at"] < p["kept_at"]:
+                p["kept_at"] = r["kept_at"]
+            live = r["superseded_at"] is None
+            if live and p["via"] is None:
+                p["via"] = {"project": r["project"], "key": r["key"]}
+            p["facts"].append({"id": r["id"], "project": r["project"], "key": r["key"], "value": r["value"],
+                               "live": live, "created_at": r["created_at"], "kept_at": r["kept_at"]})
+        out = list(figs.values())
+        for p in out:
+            p["missing"] = self.figures is None or not self.figures.has(p["digest"])
+        out.sort(key=lambda p: (p["kept_at"] or 0, p["digest"]), reverse=True)
+        return out
+
+    @_serialized
     def referenced_digests(self) -> set[str]:
         return {r[0] for r in self._conn.execute("SELECT DISTINCT digest FROM figures")}
 

@@ -51,26 +51,155 @@ function human(n) {
     n = Number(n || 0);
     for (const u of ["B", "KB", "MB", "GB"]) { if (n < 1024 || u === "GB") return (u === "B" ? n : n.toFixed(1)) + " " + u; n /= 1024; }
 }
+// Every figure in a strip is a button to the figure modal ("figures viewable
+// in a loci key", Chad, 20 Oct 2026): data-open-fig carries the digest and
+// data-fact the fact's id, so a delegated click can build the modal from the
+// strip when the gallery has not been loaded yet.
+function figPath(project, key, digest) {
+    return `/fact/figures/${encodeURIComponent(digest)}?project=${encodeURIComponent(project)}&key=${encodeURIComponent(key)}`;
+}
 function figuresStrip(f) {
     const figs = f.figures || [];
     if (!figs.length) return "";
-    const qs = `?project=${encodeURIComponent(f.project)}&key=${encodeURIComponent(f.key)}`;
+    const at = `data-fact="${escapeHtml(f.id)}" data-project="${escapeHtml(f.project)}" data-key="${escapeHtml(f.key)}"`;
     return `<div class="figs">` + figs.map(g => {
         const title = escapeHtml(g.caption || g.file || "");
+        const open = `data-open-fig="${escapeHtml(g.digest)}" ${at}`;
         if (STILL.has(g.mime)) {
-            return `<figure class="fig" title="${title}"><img alt="${title}" data-fig="/fact/figures/${encodeURIComponent(g.digest)}${qs}"><figcaption>${title}</figcaption></figure>`;
+            return `<figure class="fig" title="${title}" ${open}><img alt="${title}" data-fig="${figPath(f.project, f.key, g.digest)}"><figcaption>${title}</figcaption></figure>`;
         }
-        return `<span class="fig chip" title="${title}">${escapeHtml((g.mime || "file").split("/")[0])} · ${human(g.bytes)}</span>`;
+        return `<span class="fig chip" title="${title}" ${open}>${escapeHtml((g.mime || "file").split("/")[0])} · ${human(g.bytes)}</span>`;
     }).join("") + `</div>`;
 }
 function hydrateFigures(root) {
-    root.querySelectorAll("img[data-fig]").forEach(async img => {
-        const path = img.dataset.fig;
-        img.removeAttribute("data-fig");
-        try { img.src = await apiBlob(path); img.classList.add("ready"); }
-        catch (e) { img.replaceWith(Object.assign(document.createElement("span"), { className: "fig chip", textContent: "picture missing" })); }
+    // img, video and audio take the object URL as src; a link (a PDF) as href.
+    root.querySelectorAll("[data-fig]").forEach(async el => {
+        const path = el.dataset.fig;
+        el.removeAttribute("data-fig");
+        try {
+            const url = await apiBlob(path);
+            if (el.tagName === "A") el.href = url; else el.src = url;
+            el.classList.add("ready");
+        }
+        catch (e) { el.replaceWith(Object.assign(document.createElement("span"), { className: "fig chip", textContent: "picture missing" })); }
     });
 }
+
+// ---- the Figures hall: figure first ----------------------------------------
+// Every figure once, the newest kept first; open one and it shows the facts
+// that cite it. A figure rides on more than one row when a new value cites
+// the old one again, so the gallery is keyed by the digest and "what cites
+// this" is a list. Mimics Memory's Eidetic hall (Chad, 20 Oct 2026).
+let _figGallery = [];
+let _histCache = [];                 // the last trace, so a strip click there finds its fact
+function figKind(p) { return (p.mime || "file").split("/")[0]; }
+function figGlyph(p) {
+    const k = figKind(p);
+    return k === "audio" ? "♪ sound" : k === "video" ? "▶ clip" : p.mime === "application/pdf" ? "PDF" : k;
+}
+async function loadFigures() {
+    const el = document.getElementById("figureGallery");
+    const hint = document.getElementById("figuresHint");
+    try {
+        const data = await api("/figures?limit=1000");
+        _figGallery = data.figures || [];
+        if (!_figGallery.length) {
+            el.innerHTML = `<div class="empty">${data.enabled === false ? "this store keeps no figures (figures.enabled is off)" : "no figures cited yet"}</div>`;
+            return;
+        }
+        hint.textContent = `${data.count} figure${data.count === 1 ? "" : "s"} · ${human(data.bytes)} · newest first · open one to see what cites it`;
+        el.innerHTML = `<div class="gallery">${_figGallery.map(figureTile).join("")}</div>`;
+        hydrateFigures(el);
+    } catch (e) { el.innerHTML = ""; showErr(e.message); }
+}
+function figureTile(p, i) {
+    const n = (p.facts || []).length;
+    const title = escapeHtml(p.caption || p.file || p.digest.slice(0, 12));
+    const on = `<span class="on">on ${n} fact${n === 1 ? "" : "s"}</span>`;
+    const face = p.missing ? `<span class="what">figure missing</span>`
+               : !p.via ? `<span class="what"><span class="glyph">${escapeHtml(figGlyph(p))}</span><br>history only</span>`
+               : STILL.has(p.mime) ? `<img alt="${title}" data-fig="${figPath(p.via.project, p.via.key, p.digest)}">`
+               : `<span class="what"><span class="glyph">${escapeHtml(figGlyph(p))}</span><br>${human(p.bytes)}</span>`;
+    return `<button class="tile${p.missing ? " missing" : ""}" data-pic="${i}" title="${title}">${face}${on}</button>`;
+}
+
+// The modal. One for the gallery and for a strip: the same card, the same
+// header row with the title and a square close (the family's shape, like
+// Memory's eidetic card after 20 Oct 2026).
+function citingCard(c) {
+    const tag = c.live ? `<span class="tag" style="color:var(--accent);border-color:var(--accent-dim)">live</span>`
+                       : `<span class="tag superseded">superseded</span>`;
+    const why = c.why ? `<div class="why"><b>why</b> · ${escapeHtml(c.why)}</div>` : "";
+    return `<div class="card${c.live ? "" : " dim"}">
+        <div class="k">${escapeHtml(c.key)}</div>
+        <div class="v">${escapeHtml(c.value)}</div>
+        ${why}
+        <div class="foot">${tag}<span>${escapeHtml(c.project)}</span><span>${relAge(c.created_at)}</span>
+          <button class="linkbtn" data-hk="${escapeHtml(c.key)}" data-hp="${escapeHtml(c.project)}">history ↗</button></div>
+      </div>`;
+}
+function openFigure(p) {
+    if (!p) return;
+    let o = document.getElementById("pic-overlay");
+    if (!o) {
+        o = document.createElement("div");
+        o.id = "pic-overlay";
+        o.className = "pic-overlay";
+        document.body.appendChild(o);
+        o.addEventListener("click", (ev) => { if (ev.target === o || ev.target.closest(".pic-close")) closeFigure(); });
+        document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") closeFigure(); });
+    }
+    const title = escapeHtml(p.caption || p.file || p.digest.slice(0, 12));
+    const kind = figKind(p);
+    const at = p.via ? figPath(p.via.project, p.via.key, p.digest) : "";
+    // the bytes come through a live fact only: history alone cannot show them
+    const face = p.missing ? `<div class="empty">the bytes are gone from the folder; the facts still cite it</div>`
+               : !p.via ? `<div class="empty">only history cites this figure; the bytes are served through a live fact</div>`
+               : STILL.has(p.mime) ? `<img alt="${title}" data-fig="${at}">`
+               : kind === "video" ? `<video controls data-fig="${at}"></video>`
+               : kind === "audio" ? `<audio controls data-fig="${at}"></audio>`
+               : `<a class="btn" target="_blank" rel="noopener" data-fig="${at}">open the ${escapeHtml(kind)}</a>`;
+    const from = p.source ? `<span title="${escapeHtml(p.source)}">from ${escapeHtml(p.source.split(/[\\/]/).pop())}</span>` : "";
+    const facts = [p.mime, human(p.bytes), p.kept_at ? `kept ${relAge(p.kept_at)}` : "", `${p.digest.slice(0, 12)}…`]
+                  .filter(Boolean).map(f => `<span>${escapeHtml(f)}</span>`).join("") + from;
+    const n = (p.facts || []).length;
+    o.innerHTML = `
+        <div class="pic-card" role="dialog" aria-label="${title || "figure"}">
+            <div class="pic-head">
+                <span class="pic-title">${title}</span>
+                <button class="pic-close" aria-label="close">✕</button>
+            </div>
+            <div class="face">${face}</div>
+            <div class="facts">${facts}</div>
+            <h3 class="group-h">cited by ${n} fact${n === 1 ? "" : "s"}</h3>
+            <div class="stack">${(p.facts || []).map(citingCard).join("")}</div>
+        </div>`;
+    o.classList.add("show");
+    o.querySelectorAll("[data-hk]").forEach(b => b.onclick = () => { closeFigure(); gotoHistory(b.dataset.hp, b.dataset.hk); });
+    hydrateFigures(o);
+}
+function closeFigure() { const o = document.getElementById("pic-overlay"); if (o) o.classList.remove("show"); }
+
+// A click on a tile opens the gallery's entry; a click on a strip's figure
+// opens the gallery's entry when it is loaded, else one built from the strip
+// and the fact it hangs on.
+document.addEventListener("click", (ev) => {
+    const t = ev.target.closest(".tile[data-pic]");
+    if (t) { openFigure(_figGallery[parseInt(t.dataset.pic, 10)]); return; }
+    const s = ev.target.closest("[data-open-fig]");
+    if (!s) return;
+    const digest = s.dataset.openFig;
+    const known = _figGallery.find(p => p.digest === digest);
+    if (known) { openFigure(known); return; }
+    const fact = [...factsCache, ..._histCache].find(f => f.id === s.dataset.fact);
+    const g = fact ? (fact.figures || []).find(x => x.digest === digest) : null;
+    const live = !fact || !fact.superseded_at;
+    openFigure({ digest, mime: g?.mime, bytes: g?.bytes, caption: g?.caption, source: g?.source, kept_at: g?.kept_at,
+                 file: g?.file, missing: false,
+                 via: live ? { project: s.dataset.project, key: s.dataset.key } : null,
+                 facts: fact ? [{ id: fact.id, project: fact.project, key: fact.key, value: fact.value, why: fact.why,
+                                  live, created_at: fact.created_at }] : [] });
+});
 
 // ---- backups: the same panel on every Seren viewer --------------------------
 // Reads /stores (seren_sinew.stores): what is kept, the snapshots, when a
@@ -237,6 +366,7 @@ async function runHistory() {
         const qs = `?project=${encodeURIComponent(project)}&key=${encodeURIComponent(key)}`;
         const data = await api(`/fact/history${qs}`);
         if (!data.count) { el.innerHTML = `<div class="empty">No history for <b>${escapeHtml(project)}</b> / <b>${escapeHtml(key)}</b>.</div>`; return; }
+        _histCache = data.history;
         el.innerHTML = data.history.map((f, i) => {
             const live = !f.superseded_at;
             const tag = live ? `<span class="tag" style="color:var(--accent);border-color:var(--accent-dim)">live</span>`
@@ -324,6 +454,7 @@ function populateScopeSelects() {
 function switchTab(tab) {
     showTab(tab);
     if (tab === "overview") loadOverview();
+    if (tab === "figures") loadFigures();
 }
 
 // ---- wiring -----------------------------------------------------------------
@@ -340,6 +471,7 @@ document.getElementById("histKey").addEventListener("keydown", e => { if (e.key 
 function reload() {
     boot();
     if (document.getElementById("overview").classList.contains("active")) loadOverview();
+    if (document.getElementById("figures").classList.contains("active")) loadFigures();
 }
 
 // ---- boot -------------------------------------------------------------------

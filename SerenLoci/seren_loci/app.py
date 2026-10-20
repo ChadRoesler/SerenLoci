@@ -27,6 +27,7 @@ its finder is a derived index it can rebuild from text, so it never needs the
 """
 from __future__ import annotations
 
+import asyncio
 import time
 import logging
 from contextlib import asynccontextmanager, AsyncExitStack
@@ -232,6 +233,23 @@ def create_app(config: LociConfig | None = None) -> FastAPI:
                 getattr(request.app.state, "updates", None),
                 distribution="seren-loci", installed=APP_VERSION),
         }
+
+    @app.get("/figures")
+    async def figure_gallery(request: Request, include_history: bool = True, limit: int = 200, offset: int = 0):
+        """Every figure kept, once each, newest first, with the facts citing
+        it: the viewer's Figures hall (20 Oct 2026). The words come back
+        here; the bytes stay behind GET /fact/figures/{digest}?project&key,
+        which each figure's `via` names - a live fact, since that route only
+        serves through one. include_history=false drops what only history
+        cites."""
+        store = request.app.state.store
+        figs = await asyncio.to_thread(store.figure_gallery)
+        if not include_history:
+            figs = [p for p in figs if p["via"] is not None]
+        limit, offset = max(1, min(int(limit), 1000)), max(0, int(offset))
+        return {"ok": True, "enabled": store.figures is not None, "count": len(figs),
+                "bytes": store.figures.total_bytes() if store.figures is not None else 0,
+                "figures": figs[offset:offset + limit]}
 
     # GET /stores, POST /stores/snapshot, GET /stores/snapshots - behind the
     # same bearer as every other route. The keeper is built at startup.
