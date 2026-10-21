@@ -52,7 +52,7 @@ function human(n) {
     for (const u of ["B", "KB", "MB", "GB"]) { if (n < 1024 || u === "GB") return (u === "B" ? n : n.toFixed(1)) + " " + u; n /= 1024; }
 }
 // Every figure in a strip is a button to the figure modal ("figures viewable
-// in a loci key", Chad, 20 Oct 2026): data-open-fig carries the digest and
+// in a loci key", 20 Oct 2026): data-open-fig carries the digest and
 // data-fact the fact's id, so a delegated click can build the modal from the
 // strip when the gallery has not been loaded yet.
 function figPath(project, key, digest) {
@@ -89,7 +89,7 @@ function hydrateFigures(root) {
 // Every figure once, the newest kept first; open one and it shows the facts
 // that cite it. A figure rides on more than one row when a new value cites
 // the old one again, so the gallery is keyed by the digest and "what cites
-// this" is a list. Mimics Memory's Eidetic hall (Chad, 20 Oct 2026).
+// this" is a list. Mimics Memory's Eidetic hall (20 Oct 2026).
 let _figGallery = [];
 let _histCache = [];                 // the last trace, so a strip click there finds its fact
 function figKind(p) { return (p.mime || "file").split("/")[0]; }

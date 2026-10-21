@@ -254,7 +254,7 @@ def test_the_viewer_shows_figures_and_the_backup_panel_and_counts_stay_a_closed_
 
 
 # ── the Figures hall: figure first (20 Oct 2026) ───────────────────────────
-# Chad: "figures tab and modal view, and figures viewable in a loci key.
+# The ask: "figures tab and modal view, and figures viewable in a loci key.
 # mimicking what we have for eidetic memory for memory."
 
 def test_the_gallery_lists_every_figure_once_with_what_cites_it(tmp_path):

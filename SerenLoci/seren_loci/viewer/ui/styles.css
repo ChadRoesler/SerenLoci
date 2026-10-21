@@ -486,7 +486,7 @@ input, select {
 
 /* -- the Figures hall: figure first. A grid of every exhibit kept; open one
    and it shows the facts that cite it. The same shapes as Memory's Eidetic
-   hall with Loci's cyan where Memory wears rose (Chad, 20 Oct 2026:
+   hall with Loci's cyan where Memory wears rose (20 Oct 2026:
    "mimicking what we have for eidetic memory"). Thumbnails come through the
    token, like the strips on a fact. ------------------------------------- */
 .figs .fig[data-open-fig] { cursor: pointer; }
@@ -608,7 +608,7 @@ input, select {
     .pic-card .pic-close {
         flex: 0 0 auto;
         /* a flex box with no padding: the ✕ sat a hair low and right of the
-           square's centre as inline text (Chad, 20 Oct 2026: "center close X
+           square's centre as inline text (20 Oct 2026: "center close X
            on Eidetic and Figure modals"). Same rule in Memory and Loci. */
         display: inline-flex;
         align-items: center;

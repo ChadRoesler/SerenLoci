@@ -630,7 +630,7 @@ class LociStore:
     def figure_gallery(self) -> list[dict[str, Any]]:
         """Figure first: every figure once, the newest kept first, each with
         every fact row that cites it. The viewer's Figures hall, the shape of
-        Memory's eidetic gallery (Chad, 20 Oct 2026: "mimicking what we have
+        Memory's eidetic gallery (20 Oct 2026: "mimicking what we have
         for eidetic memory"). A figure rides on more than one row when a new
         value cites the old one again (`figure:<digest>`), so the gallery is
         keyed by the digest and what cites it is a list.
