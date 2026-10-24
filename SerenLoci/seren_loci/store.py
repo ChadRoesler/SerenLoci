@@ -141,6 +141,36 @@ CREATE TABLE IF NOT EXISTS figures (
     PRIMARY KEY (fact_id, digest)
 );
 CREATE INDEX IF NOT EXISTS idx_figures_digest ON figures(digest);
+
+-- Citations (23 Oct 2026): a fact RESTS ON another when it holds because
+-- that one does - dependency, never "related to". Between ADDRESSES, not rows:
+-- a superseded fact's citations still point at its key, and so at the value
+-- that replaced it. A dry run over one inhabitant's 165 facts found six
+-- whose reason had changed under them with nothing to say so; this is what
+-- says so.
+CREATE TABLE IF NOT EXISTS rests_on (
+    project     TEXT NOT NULL,
+    key         TEXT NOT NULL,
+    on_project  TEXT NOT NULL,
+    on_key      TEXT NOT NULL,
+    why         TEXT,
+    created_at  REAL NOT NULL,
+    PRIMARY KEY (project, key, on_project, on_key)
+);
+CREATE INDEX IF NOT EXISTS idx_rests_on_target ON rests_on(on_project, on_key);
+
+-- What changed under a fact: something it rests on was superseded or
+-- retired. Kept until the fact is written again or said to still hold.
+CREATE TABLE IF NOT EXISTS recheck (
+    project     TEXT NOT NULL,
+    key         TEXT NOT NULL,
+    on_project  TEXT NOT NULL,
+    on_key      TEXT NOT NULL,
+    what        TEXT NOT NULL,       -- superseded | retired
+    why_changed TEXT,
+    at          REAL NOT NULL,
+    PRIMARY KEY (project, key, on_project, on_key)
+);
 """
 
 # The FTS table's columns, as _SCHEMA creates it and _reconcile_fts stamps it.
@@ -373,6 +403,9 @@ class LociStore:
                 )
                 if self._finder is not None:
                     self._finder.delete(old["rowid"])
+                self._flag_resting_on(cur, w.project, w.key, "superseded", w.why_changed, now)
+            # written again: whatever was waiting to be rechecked under it has been
+            cur.execute("DELETE FROM recheck WHERE project=? AND key=?", (w.project, w.key))
 
             self._insert_live(cur, fact)
             self._conn.commit()
@@ -416,12 +449,15 @@ class LociStore:
             if old is None:
                 self._conn.rollback()
                 return False
+            now = time.time()
             cur.execute(
                 "UPDATE facts SET superseded_at=?, why_changed=? WHERE rowid=?",
-                (time.time(), _clean(why_changed), old["rowid"]),
+                (now, _clean(why_changed), old["rowid"]),
             )
             if self._finder is not None:
                 self._finder.delete(old["rowid"])
+            self._flag_resting_on(cur, project, key, "retired", why_changed, now)
+            cur.execute("DELETE FROM recheck WHERE project=? AND key=?", (project, key))
             self._conn.commit()
             return True
         except Exception:
@@ -477,6 +513,13 @@ class LociStore:
                 "SELECT ?, digest, bytes, mime, caption, source, kept_at FROM figures WHERE fact_id=?",
                 (moved.id, old["id"]),
             )
+            # its citations, both ways, and what waits to be rechecked go with
+            # it: the same fact at a new address, nothing changed under anyone
+            for table in ("rests_on", "recheck"):
+                cur.execute(f"UPDATE OR REPLACE {table} SET project=?, key=? WHERE project=? AND key=?",
+                            (to_project, to_key, m.project, m.key))
+                cur.execute(f"UPDATE OR REPLACE {table} SET on_project=?, on_key=? "
+                            "WHERE on_project=? AND on_key=?", (to_project, to_key, m.project, m.key))
             self._conn.commit()
         except Exception:
             self._conn.rollback()
@@ -499,6 +542,13 @@ class LociStore:
             notes.append("why_changed was not kept: there was no live value to replace, and the "
                          "reason is kept on the value a write replaces.")
         notes += self._fold_notes(w.project)
+        if replaced:
+            n = self._conn.execute("SELECT COUNT(*) FROM rests_on WHERE on_project=? AND on_key=?",
+                                   (w.project, w.key)).fetchone()[0]
+            if n:
+                notes.append(f"{n} fact{'' if n == 1 else 's'} rest{'s' if n == 1 else ''} on this one and "
+                             f"{'is' if n == 1 else 'are'} marked to recheck: facts_to_recheck lists them, "
+                             "and still_holds clears one that does.")
         if self._finder is not None:
             notes += self._finder.window_notes(w.project, w.key, w.value, w.why)
         return notes
@@ -531,6 +581,153 @@ class LociStore:
             (project, key),
         ).fetchone()
         return self._attach([_row_to_fact(row)])[0] if row else None
+
+    # ──────────────────────────────────────────────────────────────────
+    #  CITATIONS - what a fact rests on (23 Oct 2026)
+    # ──────────────────────────────────────────────────────────────────
+    def _live_value(self, project: str, key: str) -> Optional[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT value, why FROM facts WHERE project=? AND key=? AND superseded_at IS NULL",
+            (project, key)).fetchone()
+
+    def _flag_resting_on(self, cur, project: str, key: str, what: str,
+                         why_changed: Optional[str], now: float) -> int:
+        """Every fact that rests on (project, key) is marked to recheck,
+        inside the caller's transaction. Only the ones resting on it
+        directly: a fact two steps away is told when the one between them is
+        rewritten, by whoever rewrites it."""
+        rows = cur.execute("SELECT project, key FROM rests_on WHERE on_project=? AND on_key=?",
+                           (project, key)).fetchall()
+        for r in rows:
+            cur.execute(
+                "INSERT INTO recheck (project, key, on_project, on_key, what, why_changed, at) "
+                "VALUES (?,?,?,?,?,?,?) ON CONFLICT(project, key, on_project, on_key) DO UPDATE SET "
+                "what=excluded.what, why_changed=excluded.why_changed, at=excluded.at",
+                (r["project"], r["key"], project, key, what, _clean(why_changed), now))
+        return len(rows)
+
+    @_serialized
+    def cite(self, project: str, key: str, on_project: str, on_key: str,
+             why: Optional[str] = None) -> bool:
+        """(project, key) rests on (on_project, on_key): it holds because that
+        one does. Both must be live. True when the citation is new, False
+        when it was there (its why is updated). Raises ValueError for a fact
+        resting on itself and LookupError for an address with no live value."""
+        if (project, key) == (on_project, on_key):
+            raise ValueError("a fact cannot rest on itself")
+        for p, k in ((project, key), (on_project, on_key)):
+            if self._live_value(p, k) is None:
+                raise LookupError(f"no live fact for project={p!r} key={k!r}")
+        new = self._conn.execute(
+            "SELECT 1 FROM rests_on WHERE project=? AND key=? AND on_project=? AND on_key=?",
+            (project, key, on_project, on_key)).fetchone() is None
+        self._conn.execute(
+            "INSERT INTO rests_on (project, key, on_project, on_key, why, created_at) VALUES (?,?,?,?,?,?) "
+            "ON CONFLICT(project, key, on_project, on_key) DO UPDATE SET why=excluded.why",
+            (project, key, on_project, on_key, _clean(why), time.time()))
+        self._conn.commit()
+        return new
+
+    @_serialized
+    def uncite(self, project: str, key: str, on_project: str, on_key: str) -> bool:
+        """Take a citation back; what was waiting to be rechecked because of
+        it goes too. True when there was one."""
+        n = self._conn.execute(
+            "DELETE FROM rests_on WHERE project=? AND key=? AND on_project=? AND on_key=?",
+            (project, key, on_project, on_key)).rowcount
+        self._conn.execute(
+            "DELETE FROM recheck WHERE project=? AND key=? AND on_project=? AND on_key=?",
+            (project, key, on_project, on_key))
+        self._conn.commit()
+        return n > 0
+
+    @_serialized
+    def citations(self, project: str, key: str) -> dict[str, list[dict[str, Any]]]:
+        """What (project, key) rests on, what rests on it, and what is
+        waiting to be rechecked under it - each with the live value it names
+        now (None for a retired address)."""
+        def side(sql: str, p: str, k: str) -> list[dict[str, Any]]:
+            out = []
+            for r in self._conn.execute(sql, (project, key)).fetchall():
+                live = self._live_value(r[p], r[k])
+                out.append({"project": r[p], "key": r[k], "why": r["why"],
+                            "value": live["value"] if live else None, "live": live is not None})
+            return out
+        recheck = [{"on_project": r["on_project"], "on_key": r["on_key"], "what": r["what"],
+                    "why_changed": r["why_changed"], "at": r["at"]}
+                   for r in self._conn.execute("SELECT * FROM recheck WHERE project=? AND key=? ORDER BY at",
+                                               (project, key)).fetchall()]
+        return {
+            "rests_on": side("SELECT on_project, on_key, why FROM rests_on WHERE project=? AND key=? "
+                             "ORDER BY on_project, on_key", "on_project", "on_key"),
+            "rested_on_by": side("SELECT project, key, why FROM rests_on WHERE on_project=? AND on_key=? "
+                                 "ORDER BY project, key", "project", "key"),
+            "recheck": recheck,
+        }
+
+    @_serialized
+    def to_recheck(self) -> list[dict[str, Any]]:
+        """Every live fact something it rests on changed under, oldest change
+        first: the fact as it reads, and what changed (the value there now,
+        or None when it was retired, and why)."""
+        out: dict[tuple[str, str], dict[str, Any]] = {}
+        for r in self._conn.execute("SELECT * FROM recheck ORDER BY at").fetchall():
+            mine = self._live_value(r["project"], r["key"])
+            if mine is None:
+                continue
+            row = out.setdefault((r["project"], r["key"]), {
+                "project": r["project"], "key": r["key"], "value": mine["value"], "why": mine["why"],
+                "because": []})
+            now = self._live_value(r["on_project"], r["on_key"])
+            row["because"].append({"project": r["on_project"], "key": r["on_key"],
+                                   "what": r["what"], "why_changed": r["why_changed"], "at": r["at"],
+                                   "reads_now": now["value"] if now else None})
+        return list(out.values())
+
+    @_serialized
+    def still_holds(self, project: str, key: str) -> int:
+        """Looked at, and it still holds: what was waiting to be rechecked
+        under (project, key) is cleared. Returns how many were."""
+        n = self._conn.execute("DELETE FROM recheck WHERE project=? AND key=?", (project, key)).rowcount
+        self._conn.commit()
+        return n
+
+    @_serialized
+    def city(self) -> dict[str, Any]:
+        """Every live fact, project by project, for the skyline: when its
+        address was first written (a tower is built from the ground up), how
+        many values it held before this one, what it rests on and what rests
+        on it, and whether something under it changed."""
+        first = {(r["project"], r["key"]): (r["first"], r["n"]) for r in self._conn.execute(
+            "SELECT project, key, MIN(created_at) AS first, COUNT(*) AS n FROM facts GROUP BY project, key")}
+        rech = {(r["project"], r["key"]): r["c"] for r in self._conn.execute(
+            "SELECT project, key, COUNT(*) AS c FROM recheck GROUP BY project, key")}
+        live = {(r["project"], r["key"]) for r in self._conn.execute(
+            "SELECT project, key FROM facts WHERE superseded_at IS NULL")}
+        links = [{"project": r["project"], "key": r["key"], "on_project": r["on_project"], "on_key": r["on_key"],
+                  "why": r["why"]}
+                 for r in self._conn.execute("SELECT * FROM rests_on ORDER BY project, key").fetchall()
+                 if (r["project"], r["key"]) in live and (r["on_project"], r["on_key"]) in live]
+        out_n: dict[tuple[str, str], int] = {}
+        in_n: dict[tuple[str, str], int] = {}
+        for lk in links:
+            out_n[(lk["project"], lk["key"])] = out_n.get((lk["project"], lk["key"]), 0) + 1
+            in_n[(lk["on_project"], lk["on_key"])] = in_n.get((lk["on_project"], lk["on_key"]), 0) + 1
+        towers: dict[str, list[dict[str, Any]]] = {}
+        for r in self._conn.execute("SELECT * FROM facts WHERE superseded_at IS NULL").fetchall():
+            addr = (r["project"], r["key"])
+            built, n = first.get(addr, (r["created_at"], 1))
+            towers.setdefault(r["project"], []).append({
+                "key": r["key"], "value": r["value"], "why": r["why"], "source": r["source"],
+                "built_at": built, "written_at": r["created_at"], "history": max(0, n - 1),
+                "rests_on": out_n.get(addr, 0), "rested_on_by": in_n.get(addr, 0),
+                "recheck": rech.get(addr, 0)})
+        for floors in towers.values():
+            floors.sort(key=lambda f: (f["built_at"], f["key"]))
+        return {"towers": [{"project": p, "floors": towers[p]} for p in sorted(towers)],
+                "links": links,
+                "counts": {"towers": len(towers), "floors": sum(len(v) for v in towers.values()),
+                           "skyways": len(links), "recheck": len(rech)}}
 
     # ──────────────────────────────────────────────────────────────────
     #  FIGURES - the exhibits a fact cites
@@ -822,8 +1019,15 @@ class LociStore:
                 score = 0.05 + 0.95 * base
                 hits[f.id] = _hit(f, score=round(score, 6), kind="lexical")
 
-        ordered = sorted(hits.values(), key=lambda h: h.score, reverse=True)
-        return ordered[:n_results], self.finder_kind
+        ordered = sorted(hits.values(), key=lambda h: h.score, reverse=True)[:n_results]
+        for h in ordered:
+            if h.live:
+                under = [f"{r['on_project']}/{r['on_key']} {r['what']}" for r in self._conn.execute(
+                    "SELECT on_project, on_key, what FROM recheck WHERE project=? AND key=?",
+                    (h.project, h.key)).fetchall()]
+                if under:
+                    h.recheck = under
+        return ordered, self.finder_kind
 
     # ──────────────────────────────────────────────────────────────────
     #  internals

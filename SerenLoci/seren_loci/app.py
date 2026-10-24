@@ -34,7 +34,7 @@ from contextlib import asynccontextmanager, AsyncExitStack
 
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.responses import HTMLResponse
 
@@ -292,6 +292,20 @@ def create_app(config: LociConfig | None = None) -> FastAPI:
             accent="#5bc8e8",
         )
         return HTMLResponse(html)
+
+    # The Skyline's 3D library (three.js r159, MIT, vendored so the viewer
+    # works on a LAN with no internet; 23 Oct 2026). Under /viewer/, so public
+    # like the page itself (Meninges treats /viewer/... as public): it is a
+    # library, no data.
+    _VENDOR = {"three.min.js"}
+
+    @app.get("/viewer/vendor/{name}")
+    async def viewer_vendor(name: str):
+        from fastapi.responses import FileResponse
+        if name not in _VENDOR:
+            raise HTTPException(404, "no such file")
+        return FileResponse(Path(__file__).parent / "viewer" / "vendor" / name,
+                            media_type="text/javascript", headers={"Cache-Control": "private, max-age=86400"})
 
     # -- Fact + search routes --
     app.include_router(fact_routes.router)

@@ -192,6 +192,10 @@ class SearchHit(BaseModel):
     # How many exhibits the fact cites. A count: a hit stays light, and
     # look_at_fact shows them.
     figures: int = 0
+    # Something this fact rests on changed under it (23 Oct 2026): which
+    # address and how ("seren-hippocampus/hippocampus-loop superseded"). A
+    # reader takes the hit as possibly stale until it is rechecked.
+    recheck: Optional[list[str]] = None
 
 
 class SearchResponse(BaseModel):

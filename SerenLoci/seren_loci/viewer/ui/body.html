@@ -60,3 +60,33 @@
     <h3 class="group-h">Backups</h3>
     <div class="backups" id="backups"><div class="empty">Loading…</div></div>
 </section>
+
+<!-- SKYLINE (23 Oct 2026): the facts as a city. A tower per project, a floor
+     per fact (oldest at the bottom), skyways where one fact rests on another.
+     Memory's Map is a nebula; this is the rigid hemisphere. The scene is
+     fixed under the tab bar; the controls, legend and the chosen floor float
+     over it. -->
+<section class="view" id="skyline">
+    <div id="sky-wrap">
+        <div id="sky-canvas"></div>
+        <div class="sky-controls">
+            <label class="sky-check"><input type="checkbox" id="sky-drift" checked /> drift</label>
+            <label class="sky-check"><input type="checkbox" id="sky-snow" checked /> snow</label>
+            <label class="sky-check"><input type="checkbox" id="sky-ways" checked /> skyways</label>
+            <input type="search" id="sky-search" placeholder="light up…" aria-label="Light up facts that mention" />
+            <button class="sky-btn" id="sky-recheck" title="Visit the facts something changed under" hidden></button>
+            <button class="sky-btn" id="sky-fit" title="The whole city">⌖</button>
+        </div>
+        <div class="sky-legend">
+            <div class="sky-stats" id="sky-stats"></div>
+            <div><i class="lg-tower"></i>a tower is a project</div>
+            <div><i class="lg-floor"></i>a floor is a fact, oldest at the bottom</div>
+            <div><i class="lg-wide"></i>wider: changed more, or more rests on it</div>
+            <div><i class="lg-way"></i>skyway: rests on (lights walk toward the reason)</div>
+            <div><i class="lg-amber"></i>amber: something under it changed</div>
+        </div>
+        <div class="sky-tip" id="sky-tip" hidden></div>
+        <div class="sky-info" id="sky-info" hidden></div>
+        <div class="sky-loading" id="sky-loading">raising the city…</div>
+    </div>
+</section>

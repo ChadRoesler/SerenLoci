@@ -25,6 +25,21 @@ async def list_facts(request: Request, project: Optional[str] = None,
     return {"count": len(facts), "facts": [f.model_dump() for f in facts]}
 
 
+@router.get("/recheck")
+async def recheck(request: Request):
+    """The facts something they rest on changed under (23 Oct 2026)."""
+    rows = request.app.state.store.to_recheck()
+    return {"count": len(rows), "facts": rows}
+
+
+@router.get("/city")
+async def city(request: Request):
+    """Every live fact as a skyline: a tower per project, a floor per fact
+    (oldest at the bottom), and the skyways between floors - what rests on
+    what. Read-only; what the viewer's Skyline draws."""
+    return request.app.state.store.city()
+
+
 @router.get("/counts")
 async def counts(request: Request):
     """{live, history, projects} - the store's at-a-glance state."""

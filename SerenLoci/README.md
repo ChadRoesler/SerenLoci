@@ -141,6 +141,12 @@ curl -X POST localhost:7422/search -H 'content-type: application/json' \
 | POST   | `/fact/figures`  | Cite an exhibit on the live value (`{project, key, source, caption}`). |
 | GET    | `/fact/figures`  | The exhibits the live value cites (`?project=&key=`); `/{digest}` is the bytes. |
 | DELETE | `/fact/figures/{digest}` | Take one off the live value.                   |
+| POST   | `/fact/cite`     | `{project, key, on_project, on_key, why}`: the fact rests on another. 400 itself, 404 not live. |
+| DELETE | `/fact/cite`     | Take a citation back (`?project=&key=&on_project=&on_key=`). |
+| GET    | `/fact/citations`| What a fact rests on, what rests on it, what changed under it. |
+| POST   | `/fact/still-holds` | Looked at, still holds: clear its recheck (`?project=&key=`). |
+| GET    | `/recheck`       | Every fact something it rests on changed under.        |
+| GET    | `/city`          | The skyline: a tower per project, floors oldest first, skyways. |
 | GET    | `/facts`         | List facts in scope (`?project=&include_superseded=`). |
 | GET    | `/counts`        | `{live, history, projects, figures}`.                  |
 | POST   | `/search`        | Exact + finder discovery, ranked.                      |
@@ -179,6 +185,36 @@ figures:
     - ~/seren/stores/workbench/gallery
     - https://
 ```
+
+---
+
+## What a fact rests on
+
+A fact can **rest on** other facts: it holds *because* they do. "The brief is
+optional" rests on "a sleep decides only what is aging"; "the voice corpus
+takes any clips" rests on "Seren provides and does not police". `cite_fact`
+says so, `uncite_fact` takes it back. It is dependency, never "related to" or
+"see also" - a pointer for finding your way belongs in the why's words, and
+nothing is ever cited automatically or by similarity, because in a store
+about one life everything sits near everything.
+
+Citations are between **addresses**, not rows: a fact stays at one
+`(project, key)`, its citations can cross projects, they survive a supersede
+on either side, and they follow a move. What they buy: when a fact something
+rests on is **superseded or retired**, everything resting on it directly is
+marked to recheck. `facts_to_recheck` (`GET /recheck`) lists them with what
+changed; `get_fact` and every search hit carry `recheck`; the write's `notes`
+say how many it marked. Rewriting the fact, or `still_holds`, clears it. A
+new key that replaces an old design without retiring the old one fires
+nothing, so a design that changes supersedes or retires its old facts.
+
+The viewer's **Skyline** draws it: a tower per project (`*` at the centre),
+a floor per fact stacked in the order its address was first written, a floor
+as wide as the times it changed and the facts tied to it, a skyway where one
+fact rests on another (lights walk toward the reason), and amber where
+something under a fact changed. Its 3D library (three.js r159, MIT) is
+vendored in `viewer/vendor/` and served under `/viewer/` like the page, so it
+works on a LAN with no internet.
 
 ---
 

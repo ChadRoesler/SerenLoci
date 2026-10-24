@@ -179,3 +179,48 @@ async def forget_fact(request: Request, key: str, project: str = FUNDAMENTALS,
     if not ok:
         raise HTTPException(404, f"no live fact to forget for project={project!r} key={key!r}")
     return {"ok": True, "forgotten": {"project": project, "key": key}}
+
+
+# ── citations: what a fact rests on (23 Oct 2026) ───────────────────────────
+
+@router.post("/cite")
+async def cite_fact(request: Request, body: dict = Body(...)):
+    """(project, key) rests on (on_project, on_key): it holds because that one
+    does. Both live. 400 for a fact resting on itself, 404 for an address
+    with no live value."""
+    store = request.app.state.store
+    p, k = body.get("project", FUNDAMENTALS), body.get("key")
+    op, ok_ = body.get("on_project", FUNDAMENTALS), body.get("on_key")
+    if not k or not ok_:
+        raise HTTPException(400, "key and on_key are required")
+    try:
+        new = store.cite(p, k, op, ok_, body.get("why"))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except LookupError as e:
+        raise HTTPException(404, str(e).strip("'\""))
+    return {"ok": True, "new": new, "project": p, "key": k, "on_project": op, "on_key": ok_}
+
+
+@router.delete("/cite")
+async def uncite_fact(request: Request, key: str, on_key: str, project: str = FUNDAMENTALS,
+                      on_project: str = FUNDAMENTALS):
+    """Take a citation back. 404 when the fact did not rest on that one."""
+    if not request.app.state.store.uncite(project, key, on_project, on_key):
+        raise HTTPException(404, "it did not rest on that fact")
+    return {"ok": True}
+
+
+@router.get("/citations")
+async def citations(request: Request, key: str, project: str = FUNDAMENTALS):
+    """What the fact rests on, what rests on it, and what changed under it."""
+    store = request.app.state.store
+    if store.get_fact(project, key) is None:
+        raise HTTPException(404, f"no live fact for project={project!r} key={key!r}")
+    return {"project": project, "key": key, **store.citations(project, key)}
+
+
+@router.post("/still-holds")
+async def still_holds(request: Request, key: str, project: str = FUNDAMENTALS):
+    """Looked at, and it still holds: clear what waited to be rechecked."""
+    return {"ok": True, "cleared": request.app.state.store.still_holds(project, key)}

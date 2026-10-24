@@ -27,6 +27,14 @@ TOOL ROSTER:
     fact_history    every value a key has ever held, newest first, and why
                     each one changed
     list_facts      scan a whole scope (a project, or everything)
+    cite_fact       a fact RESTS ON another: it holds because that one does
+    uncite_fact     take a citation back
+    facts_to_recheck  the facts something they rest on changed under
+    still_holds     looked at, and it still holds: clear its recheck
+
+    A citation is dependency, never "see also" (23 Oct 2026): when a fact
+    something rests on is superseded or retired, what rests on it is marked
+    to recheck, so a fact cannot quietly outlive its reason.
 
     The descriptions below are how the keeping travels: whoever lives in a
     Loci reads them, so they say what Loci is for (anything held as fact,
@@ -247,7 +255,68 @@ class LociToolImpl:
         }
         if f.figures:
             out["figures"] = [g.model_dump() for g in f.figures]       # the rows; look_at_fact shows them
+        cites = self.store.citations(f.project, f.key)
+        for side in ("rests_on", "rested_on_by", "recheck"):
+            if cites[side]:
+                out[side] = cites[side]
         return out
+
+    # -- citations: what a fact rests on (23 Oct 2026) -----------------------
+    def cite_fact(self, key: str, rests_on_key: str, project: str = FUNDAMENTALS,
+                  rests_on_project: str = FUNDAMENTALS, why: Optional[str] = None) -> dict:
+        """Say that a fact RESTS ON another: it holds BECAUSE that one does.
+        "briefs are optional" rests on "a sleep decides only what is aging";
+        "the voice corpus takes any clips" rests on "Seren provides and does
+        not police".
+
+        Dependency only, never "related to" or "see also": a pointer for
+        finding your way belongs in the why's words. Nothing is ever cited
+        for you and nothing is cited by similarity; in a store about one life
+        everything sits near everything.
+
+        What it buys: when a fact something rests on is SUPERSEDED or RETIRED,
+        every fact resting on it is marked to recheck - facts_to_recheck
+        lists them, get_fact and search hits carry `recheck` - until it is
+        written again or still_holds says it does. Citations are between
+        addresses, so they survive supersedes on either side, and follow a
+        move. A fact can rest on several, in any project; both must be live.
+        `why` (optional): what this fact takes from that one, when the fact's
+        own why does not already say.
+        """
+        try:
+            new = self.store.cite(project, key, rests_on_project, rests_on_key, why)
+        except (ValueError, LookupError) as e:
+            return {"ok": False, "project": project, "key": key, "error": str(e).strip("'\"")}
+        return {"ok": True, "project": project, "key": key,
+                "rests_on": {"project": rests_on_project, "key": rests_on_key},
+                "note": "cited" if new else "already cited; its why is updated"}
+
+    def uncite_fact(self, key: str, rests_on_key: str, project: str = FUNDAMENTALS,
+                    rests_on_project: str = FUNDAMENTALS) -> dict:
+        """Take back a citation (cite_fact): the fact no longer rests on that
+        one. A recheck waiting because of it goes too."""
+        ok = self.store.uncite(project, key, rests_on_project, rests_on_key)
+        return {"ok": ok, "project": project, "key": key,
+                "rests_on": {"project": rests_on_project, "key": rests_on_key},
+                "note": "uncited" if ok else "it did not rest on that fact"}
+
+    def facts_to_recheck(self) -> dict:
+        """The facts something they rest on CHANGED under: a cited fact was
+        superseded or retired since. Each comes with how it reads now and,
+        under `because`, what changed (the value there now, or null when it
+        was retired, and why_changed). For each: rewrite it with set_fact if
+        it no longer holds (that clears it), or call still_holds if it does.
+        """
+        rows = self.store.to_recheck()
+        return {"count": len(rows), "facts": rows}
+
+    def still_holds(self, key: str, project: str = FUNDAMENTALS) -> dict:
+        """Looked at a fact facts_to_recheck listed, and it still holds as
+        written: what was waiting under it is cleared. (A fact that no longer
+        holds is rewritten with set_fact instead, which clears it too.)"""
+        n = self.store.still_holds(project, key)
+        return {"ok": n > 0, "project": project, "key": key, "cleared": n,
+                "note": "cleared" if n else "nothing was waiting to be rechecked under it"}
 
     # -- read (discovery) -------------------------------------------------
     def search_loci(self, query: str, n_results: int = 10,
@@ -388,5 +457,9 @@ def register_tools(mcp: FastMCP, store: LociStore,
     mcp.tool()(impl.keep_with_fact)
     mcp.tool()(impl.look_at_fact)
     mcp.tool()(impl.drop_from_fact)
+    mcp.tool()(impl.cite_fact)
+    mcp.tool()(impl.uncite_fact)
+    mcp.tool()(impl.facts_to_recheck)
+    mcp.tool()(impl.still_holds)
 
     return impl

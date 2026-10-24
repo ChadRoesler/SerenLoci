@@ -453,8 +453,11 @@ function populateScopeSelects() {
 // (gotoHistory + the tab buttons in tabs.html both call this.)
 function switchTab(tab) {
     showTab(tab);
+    document.body.classList.toggle("sky-on", tab === "skyline");
+    if (tab !== "skyline") skyPause();
     if (tab === "overview") loadOverview();
     if (tab === "figures") loadFigures();
+    if (tab === "skyline") loadSkyline().catch(e => { document.getElementById("sky-loading").textContent = "⚠ " + e.message; });
 }
 
 // ---- wiring -----------------------------------------------------------------
@@ -472,6 +475,7 @@ function reload() {
     boot();
     if (document.getElementById("overview").classList.contains("active")) loadOverview();
     if (document.getElementById("figures").classList.contains("active")) loadFigures();
+    if (document.getElementById("skyline").classList.contains("active")) loadSkyline().catch(() => {});
 }
 
 // ---- boot -------------------------------------------------------------------
@@ -481,3 +485,498 @@ async function boot() {
     loadFacts();
 }
 boot();
+
+// ---- the Skyline (23 Oct 2026) ---------------------------------------------
+// Loci as a city, Chad's idea: "TOWERS EACH FACT IS A LEVEL, LEVELS ARE SIZED
+// BY SUPERSEDES AND CITATIONS CONNECT TO OTHER TOWER LEVELS" - after the
+// Minneapolis skyways he walked between class and the bar all winter. Memory's
+// Map is a nebula; this hemisphere is rigid, so it gets steel and glass.
+// A tower per project ('*' at the centre, gold), a floor per live fact stacked
+// in the order its address was first written, a floor as wide as the times it
+// changed and the facts tied to it. A skyway per citation, with lights walking
+// from the fact toward the one it rests on; amber where something under a fact
+// changed. GET /city has it all. three.js r159 is vendored and served from
+// /viewer/vendor/.
+const SKY = {
+    lib: null, built: false, running: false, last: 0, t: 0,
+    renderer: null, scene: null, camera: null, city: null, data: null,
+    floors: [], meshes: [], byAddr: new Map(), ways: [], walkers: [], beacons: [], snow: null, extent: 200, height: 100,
+    orbit: { x: 0, y: 30, z: 0, r: 600, th: 0.75, ph: 1.08 },
+    goal: { x: 0, y: 30, z: 0, r: 600, th: 0.75, ph: 1.08 },
+    drift: !matchMedia("(prefers-reduced-motion: reduce)").matches, snowOn: true, waysOn: true,
+    selected: null, near: null, lit: null, recheckAt: -1,
+};
+const SKY_FLOOR = 3.2, SKY_GAP = 0.55, SKY_BLOCK = 66;
+const skyAddr = (p, k) => p + "\u0000" + k;
+
+function skyLib() {
+    if (window.THREE) return Promise.resolve();
+    if (!SKY.lib) {
+        SKY.lib = apiBlob("/viewer/vendor/three.min.js").then(url => new Promise((ok, bad) => {
+            const s = document.createElement("script");
+            s.src = url;
+            s.onload = () => ok();
+            s.onerror = () => bad(new Error("the 3D library did not load"));
+            document.head.appendChild(s);
+        }));
+        SKY.lib.catch(() => { SKY.lib = null; });
+    }
+    return SKY.lib;
+}
+
+function skyFrame() {
+    const bar = document.querySelector(".tabbar") || document.querySelector("header");
+    if (bar) document.getElementById("sky-wrap").style.top = Math.round(bar.getBoundingClientRect().bottom) + "px";
+}
+
+// the blocks: a square spiral out from the centre
+function skyCells(n) {
+    const out = [[0, 0]];
+    let x = 0, y = 0, dx = 1, dy = 0, seg = 1, steps = 0, turns = 0;
+    while (out.length < n) {
+        x += dx; y += dy; out.push([x, y]);
+        if (++steps === seg) { steps = 0; [dx, dy] = [-dy, dx]; if (++turns % 2 === 0) seg++; }
+    }
+    return out;
+}
+
+function skyWidth(f) {
+    return Math.min(30, 11 + 3 * Math.sqrt(f.history) + 1.6 * (f.rests_on + f.rested_on_by));
+}
+
+// lit windows on black, a few variants so no two floors read alike
+function skyWindows(seed) {
+    const c = document.createElement("canvas");
+    c.width = 256; c.height = 32;
+    const x = c.getContext("2d");
+    x.fillStyle = "#000"; x.fillRect(0, 0, 256, 32);
+    let s = seed * 9301 + 49297;
+    const rnd = () => ((s = (s * 9301 + 49297) % 233280) / 233280);
+    for (let i = 0; i < 16; i++) {
+        const lit = rnd();
+        if (lit < 0.28) continue;
+        const v = 0.45 + 0.55 * rnd();
+        x.fillStyle = lit < 0.42 ? `rgba(160,200,255,${v})` : `rgba(255,${200 + Math.floor(40 * rnd())},150,${v})`;
+        x.fillRect(i * 16 + 4, 9, 9, 15);
+    }
+    const t = new THREE.CanvasTexture(c);
+    t.colorSpace = THREE.SRGBColorSpace;
+    t.wrapS = THREE.RepeatWrapping;
+    return t;
+}
+
+function skyLabel(text, hue) {
+    const c = document.createElement("canvas");
+    c.width = 512; c.height = 96;
+    const x = c.getContext("2d");
+    x.font = "600 44px ui-sans-serif, system-ui, sans-serif";
+    x.textAlign = "center"; x.textBaseline = "middle";
+    x.shadowColor = "rgba(0,0,0,0.9)"; x.shadowBlur = 12;
+    x.fillStyle = `hsl(${hue}, 85%, 78%)`;
+    x.fillText(text, 256, 48);
+    const t = new THREE.CanvasTexture(c);
+    t.colorSpace = THREE.SRGBColorSpace;
+    const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, transparent: true, depthWrite: false }));
+    s.scale.set(44, 8.25, 1);
+    return s;
+}
+
+function skyBuild() {
+    const wrap = document.getElementById("sky-canvas");
+    const r = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    r.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    r.setClearColor(0x000000, 0);
+    wrap.appendChild(r.domElement);
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0x0b1022, 0.0011);
+    const cam = new THREE.PerspectiveCamera(45, 1, 1, 6000);
+    scene.add(new THREE.HemisphereLight(0x8fa8ff, 0x0b0d18, 0.55));
+    const moon = new THREE.DirectionalLight(0xcfe0ff, 0.9);
+    moon.position.set(-300, 500, 200);
+    scene.add(moon);
+    scene.add(new THREE.AmbientLight(0x404a70, 0.35));
+    Object.assign(SKY, { renderer: r, scene, camera: cam, built: true });
+    skyWire(r.domElement);
+    new ResizeObserver(() => {
+        const w = wrap.clientWidth, h = wrap.clientHeight;
+        if (!w || !h) return;
+        r.setSize(w, h);
+        cam.aspect = w / h;
+        cam.updateProjectionMatrix();
+    }).observe(wrap);
+}
+
+function skyCity(data) {
+    if (SKY.city) { SKY.scene.remove(SKY.city); SKY.city.traverse(o => { o.geometry && o.geometry.dispose(); }); }
+    const city = new THREE.Group();
+    SKY.city = city; SKY.floors = []; SKY.meshes = []; SKY.byAddr = new Map(); SKY.ways = []; SKY.walkers = []; SKY.beacons = [];
+    const order = [...data.towers].sort((a, b) => {
+        const rank = p => p.project === "*" ? 0 : p.project === "seren" ? 1 : p.project === "wren" ? 2 : 3;
+        return rank(a) - rank(b) || b.floors.length - a.floors.length || a.project.localeCompare(b.project);
+    });
+    const cells = skyCells(order.length);
+    const wins = [0, 1, 2, 3, 4, 5].map(skyWindows);
+    let maxH = 0, ext = 0, k = 0;
+    order.forEach((tw, i) => {
+        const hue = tw.project === "*" ? 44 : tw.project === "wren" ? 345 : (190 + (k++) * 137.508) % 360;
+        const [cx, cz] = cells[i].map(v => v * SKY_BLOCK);
+        ext = Math.max(ext, Math.abs(cx), Math.abs(cz));
+        const tower = { project: tw.project, hue, x: cx, z: cz, floors: [] };
+        tw.floors.forEach((f, lvl) => {
+            const w = skyWidth(f);
+            const y = lvl * (SKY_FLOOR + SKY_GAP) + SKY_FLOOR / 2;
+            const tex = wins[(lvl * 7 + i * 3) % wins.length].clone();
+            tex.repeat.set(Math.max(2, Math.round(w / 1.9)) / 16, 1);
+            tex.needsUpdate = true;
+            const base = new THREE.Color().setHSL(hue / 360, 0.32, f.recheck ? 0.2 : 0.17);
+            const glow = new THREE.Color().setHSL(hue / 360, 0.75, 0.68);
+            const side = new THREE.MeshStandardMaterial({ color: base, emissive: glow, emissiveMap: tex,
+                emissiveIntensity: 1.1, roughness: 0.5, metalness: 0.35 });
+            const cap = new THREE.MeshStandardMaterial({ color: base, roughness: 0.7, metalness: 0.2 });
+            const m = new THREE.Mesh(new THREE.BoxGeometry(w, SKY_FLOOR, w), [side, side, cap, cap, side, side]);
+            m.position.set(cx, y, cz);
+            const floor = { ...f, project: tw.project, level: lvl, w, y, x: cx, z: cz, hue, mesh: m, side, glow,
+                            ways: [], baseI: 1.1 };
+            m.userData.floor = floor;
+            city.add(m);
+            SKY.meshes.push(m);
+            SKY.floors.push(floor);
+            SKY.byAddr.set(skyAddr(tw.project, f.key), floor);
+            tower.floors.push(floor);
+        });
+        const top = tw.floors.length * (SKY_FLOOR + SKY_GAP);
+        maxH = Math.max(maxH, top);
+        const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.5, 9, 6),
+                                    new THREE.MeshStandardMaterial({ color: 0x2a3048, roughness: 0.8 }));
+        mast.position.set(cx, top + 4.5, cz);
+        city.add(mast);
+        const warn = tw.floors.some(f => f.recheck);
+        const beacon = new THREE.Mesh(new THREE.SphereGeometry(1.1, 10, 8),
+                                      new THREE.MeshBasicMaterial({ color: warn ? 0xffb347 : 0xff3b3b }));
+        beacon.position.set(cx, top + 9.5, cz);
+        city.add(beacon);
+        SKY.beacons.push({ mesh: beacon, phase: Math.random() * 6, warn });
+        const label = skyLabel(tw.project === "*" ? "* fundamentals" : tw.project, hue);
+        label.position.set(cx, top + 17, cz);
+        city.add(label);
+    });
+    // the ground: night streets between the blocks
+    const size = (Math.ceil(ext / SKY_BLOCK) * 2 + 3) * SKY_BLOCK;
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(size * 14, size * 14),
+                                  new THREE.MeshStandardMaterial({ color: 0x0a0d18, roughness: 1 }));
+    ground.rotation.x = -Math.PI / 2;
+    city.add(ground);
+    const grid = new THREE.GridHelper(size, size / SKY_BLOCK, 0x2a3358, 0x1a2140);
+    grid.position.set(SKY_BLOCK / 2, 0.05, SKY_BLOCK / 2);
+    city.add(grid);
+    skyWays(data.links, city);
+    skySnow(city, size, maxH);
+    SKY.scene.add(city);
+    SKY.extent = ext + SKY_BLOCK / 2;
+    SKY.height = maxH;
+}
+
+function skyWays(links, city) {
+    const glass = () => new THREE.MeshStandardMaterial({ color: 0x1c2232, emissive: 0xffcf7a, emissiveIntensity: 0.45,
+                                                         roughness: 0.3, metalness: 0.4, transparent: true, opacity: 0.7 });
+    const walkerGeo = new THREE.SphereGeometry(0.45, 8, 6);
+    for (const lk of links) {
+        const a = SKY.byAddr.get(skyAddr(lk.project, lk.key)), b = SKY.byAddr.get(skyAddr(lk.on_project, lk.on_key));
+        if (!a || !b) continue;
+        let curve, mesh;
+        const mat = glass();
+        if (a.project === b.project) {
+            // the same tower: a bridge on the outside, from one floor to the other
+            const out = Math.max(a.w, b.w) / 2 + 3 + (SKY.ways.filter(w => w.a.project === a.project).length % 4) * 1.6;
+            const ang = (a.level * 0.9) % (Math.PI * 2);
+            const ox = Math.cos(ang), oz = Math.sin(ang);
+            const p0 = new THREE.Vector3(a.x + ox * a.w / 2, a.y, a.z + oz * a.w / 2);
+            const p2 = new THREE.Vector3(b.x + ox * b.w / 2, b.y, b.z + oz * b.w / 2);
+            const p1 = new THREE.Vector3(a.x + ox * out * 1.6, (a.y + b.y) / 2, a.z + oz * out * 1.6);
+            curve = new THREE.QuadraticBezierCurve3(p0, p1, p2);
+            mesh = new THREE.Mesh(new THREE.TubeGeometry(curve, 28, 0.5, 6, false), mat);
+        } else {
+            const d = new THREE.Vector3(b.x - a.x, 0, b.z - a.z).normalize();
+            const p0 = new THREE.Vector3(a.x + d.x * a.w / 2, a.y, a.z + d.z * a.w / 2);
+            const p1 = new THREE.Vector3(b.x - d.x * b.w / 2, b.y, b.z - d.z * b.w / 2);
+            curve = new THREE.LineCurve3(p0, p1);
+            const len = p0.distanceTo(p1);
+            mesh = new THREE.Mesh(new THREE.BoxGeometry(1.25, 1.05, len), mat);
+            mesh.position.copy(p0).add(p1).multiplyScalar(0.5);
+            mesh.lookAt(p1);
+        }
+        city.add(mesh);
+        const way = { a, b, curve, mesh, mat, len: curve.getLength(), why: lk.why };
+        a.ways.push(way); b.ways.push(way);
+        SKY.ways.push(way);
+        for (let i = 0; i < 2; i++) {
+            const w = new THREE.Mesh(walkerGeo, new THREE.MeshBasicMaterial({ color: 0xfff1c9 }));
+            city.add(w);
+            SKY.walkers.push({ mesh: w, way, t: i / 2 + Math.random() * 0.2 });
+        }
+    }
+}
+
+function skySnow(city, size, h) {
+    const n = 2600, pos = new Float32Array(n * 3), speed = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+        pos[i * 3] = (Math.random() - 0.5) * size * 1.4;
+        pos[i * 3 + 1] = Math.random() * (h + 120);
+        pos[i * 3 + 2] = (Math.random() - 0.5) * size * 1.4;
+        speed[i] = 4 + Math.random() * 7;
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+    const c = document.createElement("canvas");
+    c.width = c.height = 32;
+    const x = c.getContext("2d"), grd = x.createRadialGradient(16, 16, 0, 16, 16, 16);
+    grd.addColorStop(0, "rgba(255,255,255,1)"); grd.addColorStop(1, "rgba(255,255,255,0)");
+    x.fillStyle = grd; x.fillRect(0, 0, 32, 32);
+    const flakes = new THREE.Points(g, new THREE.PointsMaterial({ size: 1.6, map: new THREE.CanvasTexture(c),
+        transparent: true, opacity: 0.85, depthWrite: false, color: 0xe8f0ff }));
+    flakes.visible = SKY.snowOn;
+    city.add(flakes);
+    SKY.snow = { points: flakes, speed, top: h + 120 };
+}
+
+// ---- looking around: drag to turn, right-drag or shift-drag to slide, wheel or pinch to zoom
+function skyWire(el) {
+    let down = null, moved = 0;
+    const pts = new Map();
+    el.addEventListener("contextmenu", e => e.preventDefault());
+    el.addEventListener("pointerdown", e => {
+        el.setPointerCapture(e.pointerId);
+        pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        down = { x: e.clientX, y: e.clientY, pan: e.button === 2 || e.shiftKey };
+        moved = 0;
+        if (SKY.drift) { SKY.drift = false; document.getElementById("sky-drift").checked = false; }
+    });
+    el.addEventListener("pointermove", e => {
+        const prev = pts.get(e.pointerId);
+        if (!prev) { skyHover(e); return; }
+        const dx = e.clientX - prev.x, dy = e.clientY - prev.y;
+        moved += Math.abs(dx) + Math.abs(dy);
+        if (pts.size === 2) {
+            const [p, q] = [...pts.entries()];
+            const other = p[0] === e.pointerId ? q[1] : p[1];
+            const before = Math.hypot(prev.x - other.x, prev.y - other.y);
+            const after = Math.hypot(e.clientX - other.x, e.clientY - other.y);
+            if (before > 0) SKY.goal.r = Math.min(2400, Math.max(30, SKY.goal.r * before / after));
+        } else if (down && down.pan) {
+            const g = SKY.goal, s = g.r * 0.0016;
+            g.x += (-Math.cos(g.th) * dx - Math.sin(g.th) * dy) * s;
+            g.z += (Math.sin(g.th) * dx - Math.cos(g.th) * dy) * s;
+        } else {
+            SKY.goal.th -= dx * 0.005;
+            SKY.goal.ph = Math.min(1.48, Math.max(0.12, SKY.goal.ph - dy * 0.004));
+        }
+        pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    });
+    const up = e => {
+        const was = pts.get(e.pointerId);
+        pts.delete(e.pointerId);
+        if (was && moved < 6 && pts.size === 0) skyPick(e);
+        if (!pts.size) down = null;
+    };
+    el.addEventListener("pointerup", up);
+    el.addEventListener("pointercancel", e => { pts.delete(e.pointerId); down = null; });
+    el.addEventListener("pointerleave", () => { document.getElementById("sky-tip").hidden = true; });
+    el.addEventListener("wheel", e => {
+        e.preventDefault();
+        SKY.goal.r = Math.min(2400, Math.max(30, SKY.goal.r * Math.exp(e.deltaY * 0.0011)));
+    }, { passive: false });
+}
+
+function skyRay(e) {
+    const rect = SKY.renderer.domElement.getBoundingClientRect();
+    const v = new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
+    const ray = new THREE.Raycaster();
+    ray.setFromCamera(v, SKY.camera);
+    const hit = ray.intersectObjects(SKY.meshes, false)[0];
+    return hit ? hit.object.userData.floor : null;
+}
+
+function skyHover(e) {
+    const tip = document.getElementById("sky-tip");
+    const f = SKY.built && SKY.floors.length ? skyRay(e) : null;
+    SKY.renderer.domElement.style.cursor = f ? "pointer" : "";
+    if (!f) { tip.hidden = true; return; }
+    const v = (f.value || "").length > 160 ? f.value.slice(0, 160) + "…" : f.value;
+    tip.innerHTML = `<div class="st-addr">${escapeHtml(f.project)} / <b>${escapeHtml(f.key)}</b></div>` +
+        `<div class="st-v">${escapeHtml(v || "")}</div>` +
+        (f.recheck ? `<div class="st-warn">something under it changed</div>` : "");
+    const rect = document.getElementById("sky-wrap").getBoundingClientRect();
+    tip.style.left = Math.min(e.clientX - rect.left + 14, rect.width - 320) + "px";
+    tip.style.top = (e.clientY - rect.top + 14) + "px";
+    tip.hidden = false;
+}
+
+function skyPick(e) { skySelect(skyRay(e)); }
+
+function skyLook() {
+    const near = SKY.near, lit = SKY.lit;
+    for (const f of SKY.floors) {
+        let i = f.baseI, col = f.glow;
+        if (f.recheck) col = new THREE.Color(0xffb347);
+        if (lit) { i = lit.has(f) ? 1.8 : 0.18; if (lit.has(f)) col = new THREE.Color(0xffe08a); }
+        if (near) i = near.has(f) ? (f === SKY.selected ? 2.2 : 1.6) : 0.15;
+        f.side.emissive.copy(col);
+        f.side.emissiveIntensity = i;
+        f.lit = i;
+    }
+    for (const w of SKY.ways) {
+        const on = !near || near.has(w.a) && near.has(w.b) && (w.a === SKY.selected || w.b === SKY.selected);
+        w.mesh.visible = SKY.waysOn;
+        w.mat.opacity = on ? (near ? 0.9 : 0.7) : 0.08;
+        w.mat.emissiveIntensity = on ? (near ? 1.2 : 0.35) : 0.05;
+        w.on = on;
+    }
+}
+
+function skySelect(f) {
+    SKY.selected = f;
+    const info = document.getElementById("sky-info");
+    if (!f) { SKY.near = null; info.hidden = true; skyLook(); return; }
+    SKY.near = new Set([f, ...f.ways.map(w => w.a), ...f.ways.map(w => w.b)]);
+    skyLook();
+    Object.assign(SKY.goal, { x: f.x, y: f.y, z: f.z, r: Math.max(70, 40 + f.w * 3.2) });
+    const rests = f.ways.filter(w => w.a === f), by = f.ways.filter(w => w.b === f);
+    const ref = (g, why) => `<li><button class="si-ref" data-p="${escapeHtml(g.project)}" data-k="${escapeHtml(g.key)}">` +
+        `<i style="background:hsl(${g.hue},80%,66%)"></i><span><b>${escapeHtml(g.project)}</b> / ${escapeHtml(g.key)}` +
+        (why ? `<em>${escapeHtml(why)}</em>` : "") + `</span></button></li>`;
+    info.innerHTML = `
+        <button class="si-close" aria-label="Close" data-close>×</button>
+        <div class="si-addr"><span class="si-proj" style="color:hsl(${f.hue},85%,72%)">${escapeHtml(f.project)}</span> · floor ${f.level + 1}</div>
+        <div class="si-key">${escapeHtml(f.key)}</div>
+        <div class="si-v">${escapeHtml(f.value || "")}</div>
+        ${f.why ? `<div class="si-why"><span>why</span>${escapeHtml(f.why)}</div>` : ""}
+        <div class="si-meta">first written ${escapeHtml(fmtTsSky(f.built_at))} · changed ${f.history} time${f.history === 1 ? "" : "s"} · ${escapeHtml(f.source || "")}
+            <button class="si-hist" data-hist>history ↗</button></div>
+        <div id="si-recheck"></div>
+        ${rests.length ? `<h4>rests on</h4><ul>${rests.map(w => ref(w.b, w.why)).join("")}</ul>` : ""}
+        ${by.length ? `<h4>what rests on it</h4><ul>${by.map(w => ref(w.a, w.why)).join("")}</ul>` : ""}`;
+    info.hidden = false;
+    info.scrollTop = 0;
+    if (f.recheck) {
+        api(`/fact/citations?project=${encodeURIComponent(f.project)}&key=${encodeURIComponent(f.key)}`).then(c => {
+            if (SKY.selected !== f) return;
+            document.getElementById("si-recheck").innerHTML = (c.recheck || []).map(r =>
+                `<div class="si-warn"><b>${escapeHtml(r.on_project)} / ${escapeHtml(r.on_key)}</b> was ${escapeHtml(r.what)}` +
+                (r.why_changed ? `: ${escapeHtml(r.why_changed)}` : "") + `</div>`).join("");
+        }).catch(() => {});
+    }
+}
+
+function fmtTsSky(ts) {
+    const d = new Date((ts || 0) * 1000);
+    return isNaN(d) ? "-" : d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+}
+
+function skyFit() {
+    const r = Math.max(SKY.extent * 2.3, SKY.height * 2.2, 160);
+    Object.assign(SKY.goal, { x: SKY_BLOCK * 0.25, y: SKY.height * 0.32, z: SKY_BLOCK * 0.25, r });
+}
+
+function skyTick(now) {
+    if (!SKY.running) return;
+    requestAnimationFrame(skyTick);
+    const dt = Math.min(0.05, (now - (SKY.last || now)) / 1000);
+    SKY.last = now;
+    SKY.t += dt;
+    const o = SKY.orbit, g = SKY.goal, a = 1 - Math.exp(-dt * 6);
+    if (SKY.drift) g.th += dt * 0.06;
+    for (const k of ["x", "y", "z", "r", "th", "ph"]) o[k] += (g[k] - o[k]) * a;
+    const c = SKY.camera;
+    c.position.set(o.x + o.r * Math.sin(o.ph) * Math.sin(o.th), o.y + o.r * Math.cos(o.ph), o.z + o.r * Math.sin(o.ph) * Math.cos(o.th));
+    c.lookAt(o.x, o.y, o.z);
+    for (const w of SKY.walkers) {
+        const show = SKY.waysOn && w.way.on;
+        w.mesh.visible = show;
+        if (!show) continue;
+        w.t = (w.t + dt * 9 / Math.max(10, w.way.len)) % 1;
+        w.mesh.position.copy(w.way.curve.getPoint(w.t));
+    }
+    for (const b of SKY.beacons) b.mesh.visible = Math.sin(SKY.t * (b.warn ? 5 : 2.2) + b.phase) > -0.2;
+    const pulse = 0.75 + 0.45 * Math.sin(SKY.t * 3);
+    if (!SKY.near && !SKY.lit) for (const f of SKY.floors) if (f.recheck) f.side.emissiveIntensity = 1.2 * pulse + 0.4;
+    if (SKY.snow && SKY.snowOn) {
+        const p = SKY.snow.points.geometry.attributes.position, s = SKY.snow.speed;
+        for (let i = 0; i < s.length; i++) {
+            let y = p.array[i * 3 + 1] - s[i] * dt;
+            if (y < 0) y += SKY.snow.top;
+            p.array[i * 3 + 1] = y;
+            p.array[i * 3] += Math.sin(SKY.t * 0.7 + i) * dt * 0.8;
+        }
+        p.needsUpdate = true;
+    }
+    SKY.renderer.render(SKY.scene, c);
+}
+
+function skyStats() {
+    const c = SKY.data.counts;
+    document.getElementById("sky-stats").textContent =
+        `${c.towers} towers · ${c.floors} floors · ${c.skyways} skyways` + (SKY.lit ? ` · ${SKY.lit.size} lit` : "");
+    const btn = document.getElementById("sky-recheck");
+    btn.hidden = !c.recheck;
+    btn.textContent = `${c.recheck} to recheck`;
+}
+
+function skyLight(q) {
+    q = (q || "").trim().toLowerCase();
+    SKY.lit = q ? new Set(SKY.floors.filter(f => [f.key, f.value, f.why, f.project].some(s => (s || "").toLowerCase().includes(q)))) : null;
+    skyLook();
+    skyStats();
+}
+
+let skyWired = false;
+function skyControls() {
+    if (skyWired) return;
+    skyWired = true;
+    document.getElementById("sky-drift").addEventListener("change", e => { SKY.drift = e.target.checked; });
+    document.getElementById("sky-snow").addEventListener("change", e => {
+        SKY.snowOn = e.target.checked;
+        if (SKY.snow) SKY.snow.points.visible = SKY.snowOn;
+    });
+    document.getElementById("sky-ways").addEventListener("change", e => { SKY.waysOn = e.target.checked; skyLook(); });
+    document.getElementById("sky-search").addEventListener("input", e => skyLight(e.target.value));
+    document.getElementById("sky-fit").addEventListener("click", () => { skySelect(null); skyFit(); });
+    document.getElementById("sky-recheck").addEventListener("click", () => {
+        const due = SKY.floors.filter(f => f.recheck);
+        if (!due.length) return;
+        SKY.recheckAt = (SKY.recheckAt + 1) % due.length;
+        skySelect(due[SKY.recheckAt]);
+    });
+    document.getElementById("sky-info").addEventListener("click", e => {
+        if (e.target.closest("[data-close]")) return skySelect(null);
+        if (e.target.closest("[data-hist]") && SKY.selected) return gotoHistory(SKY.selected.project, SKY.selected.key);
+        const ref = e.target.closest(".si-ref");
+        if (ref) skySelect(SKY.byAddr.get(skyAddr(ref.dataset.p, ref.dataset.k)) || null);
+    });
+    document.addEventListener("keydown", e => {
+        if (e.key === "Escape" && document.body.classList.contains("sky-on")) skySelect(null);
+    });
+    window.addEventListener("resize", () => { if (document.body.classList.contains("sky-on")) skyFrame(); });
+}
+
+async function loadSkyline() {
+    window.scrollTo(0, 0);
+    skyFrame();
+    const loading = document.getElementById("sky-loading");
+    loading.hidden = false;
+    loading.textContent = "raising the city…";
+    const [, data] = await Promise.all([skyLib(), api("/city")]);
+    if (!SKY.built) skyBuild();
+    skyControls();
+    document.getElementById("sky-drift").checked = SKY.drift;
+    const keep = SKY.selected && skyAddr(SKY.selected.project, SKY.selected.key);
+    SKY.data = data;
+    skyCity(data);
+    SKY.selected = null; SKY.near = null;
+    skyLight(document.getElementById("sky-search").value);
+    if (keep && SKY.byAddr.has(keep)) skySelect(SKY.byAddr.get(keep));
+    else if (!SKY.fitted) { SKY.fitted = true; skyFit(); Object.assign(SKY.orbit, SKY.goal, { r: SKY.goal.r * 1.6 }); }
+    loading.hidden = true;
+    if (!SKY.running) { SKY.running = true; SKY.last = 0; requestAnimationFrame(skyTick); }
+}
+
+function skyPause() { SKY.running = false; }
