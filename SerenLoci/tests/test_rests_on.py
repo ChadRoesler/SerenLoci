@@ -44,7 +44,7 @@ def impl(tmp_path):
 @pytest.fixture
 def house(impl):
     impl.set_fact(project=HIP, key="sleep-touches-only-the-aging", value="A sleep decides only what is aging.",
-                  why="Chad, 22 Oct: only touch what is going to age out.")
+                  why="design note, 22 Oct: only touch what is going to age out.")
     impl.set_fact(project=HIP, key="the-brief-is-optional", value="The brief is optional context.",
                   why="The aging clock picks what is drafted.")
     impl.set_fact(project="wren", key="session-end-routine", value="Write a brief when the shorts miss something.",

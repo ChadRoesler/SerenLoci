@@ -487,7 +487,7 @@ async function boot() {
 boot();
 
 // ---- the Skyline (23 Oct 2026) ---------------------------------------------
-// Loci as a city, Chad's idea: "TOWERS EACH FACT IS A LEVEL, LEVELS ARE SIZED
+// Loci as a city, the user's idea: "TOWERS EACH FACT IS A LEVEL, LEVELS ARE SIZED
 // BY SUPERSEDES AND CITATIONS CONNECT TO OTHER TOWER LEVELS" - after the
 // Minneapolis skyways he walked between class and the bar all winter. Memory's
 // Map is a nebula; this hemisphere is rigid, so it gets steel and glass.
