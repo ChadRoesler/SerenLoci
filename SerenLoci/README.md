@@ -208,7 +208,7 @@ say how many it marked. Rewriting the fact, or `still_holds`, clears it. A
 new key that replaces an old design without retiring the old one fires
 nothing, so a design that changes supersedes or retires its old facts.
 
-The viewer's **Skyline** draws it: a tower per project (`*` at the centre),
+The viewer's **City** draws it: a tower per project (`*` at the centre),
 a floor per fact stacked in the order its address was first written, a floor
 as wide as the times it changed and the facts tied to it, a skyway where one
 fact rests on another (lights walk toward the reason), and amber where

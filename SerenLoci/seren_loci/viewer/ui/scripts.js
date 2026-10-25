@@ -486,7 +486,8 @@ async function boot() {
 }
 boot();
 
-// ---- the Skyline (23 Oct 2026) ---------------------------------------------
+// ---- the City (23 Oct 2026; the tab was "Skyline" until the 24th, when the
+// Callosum's sky took that name) ------------------------------------------
 // Loci as a city, the user's idea: "TOWERS EACH FACT IS A LEVEL, LEVELS ARE SIZED
 // BY SUPERSEDES AND CITATIONS CONNECT TO OTHER TOWER LEVELS" - after the
 // Minneapolis skyways he walked between class and the bar all winter. Memory's
@@ -614,12 +615,19 @@ function skyCity(data) {
         const rank = p => p.project === "*" ? 0 : p.project === "seren" ? 1 : p.project === "wren" ? 2 : 3;
         return rank(a) - rank(b) || b.floors.length - a.floors.length || a.project.localeCompare(b.project);
     });
-    const cells = skyCells(order.length);
+    // where each tower stands: the place a hand moved it to (skyGrab, kept
+    // in this browser), else the next free cell of the spiral
+    const placed = SKY.place || {};
+    const taken = new Set(Object.values(placed).map(c => c.join(",")));
+    const free = skyCells(order.length + taken.size).filter(c => !taken.has(c.join(",")));
+    const cells = order.map(tw => placed[tw.project] || free.shift());
+    SKY.cellOf = {};
     const wins = [0, 1, 2, 3, 4, 5].map(skyWindows);
     let maxH = 0, ext = 0, k = 0;
     order.forEach((tw, i) => {
         const hue = tw.project === "*" ? 44 : tw.project === "wren" ? 345 : (190 + (k++) * 137.508) % 360;
         const [cx, cz] = cells[i].map(v => v * SKY_BLOCK);
+        SKY.cellOf[tw.project] = cells[i];
         ext = Math.max(ext, Math.abs(cx), Math.abs(cz));
         const tower = { project: tw.project, hue, x: cx, z: cz, floors: [] };
         tw.floors.forEach((f, lvl) => {
@@ -660,12 +668,10 @@ function skyCity(data) {
         label.position.set(cx, top + 17, cz);
         city.add(label);
     });
-    // the ground: night streets between the blocks
+    // the streets between the blocks, and no ground under them: a solid plane
+    // hid half the night, and the city reads better standing on its grid in
+    // the dark (24 Oct 2026: "drop the ground plane")
     const size = (Math.ceil(ext / SKY_BLOCK) * 2 + 3) * SKY_BLOCK;
-    const ground = new THREE.Mesh(new THREE.PlaneGeometry(size * 14, size * 14),
-                                  new THREE.MeshStandardMaterial({ color: 0x0a0d18, roughness: 1 }));
-    ground.rotation.x = -Math.PI / 2;
-    city.add(ground);
     const grid = new THREE.GridHelper(size, size / SKY_BLOCK, 0x2a3358, 0x1a2140);
     grid.position.set(SKY_BLOCK / 2, 0.05, SKY_BLOCK / 2);
     city.add(grid);
@@ -739,15 +745,23 @@ function skySnow(city, size, h) {
     SKY.snow = { points: flakes, speed, top: h + 120 };
 }
 
-// ---- looking around: drag to turn, right-drag or shift-drag to slide, wheel or pinch to zoom
+// ---- looking around: the family's three, as on Memory's Stars (24 Oct 2026) -----
+// Left-drag turns around the middle of the view, right-drag (or shift-drag)
+// slides it across the screen, the wheel or a pinch zooms; the middle button
+// is for moving a tower (skyGrab). A hand's move is followed at once - only the camera's own moves
+// (fit, a chosen thing) ease there. Easing the hand too is what made a drag
+// feel like the camera rumbled instead of turning.
 function skyWire(el) {
     let down = null, moved = 0;
     const pts = new Map();
+    const now = (...keys) => { for (const k of keys) SKY.orbit[k] = SKY.goal[k]; };
     el.addEventListener("contextmenu", e => e.preventDefault());
+    el.addEventListener("mousedown", e => { if (e.button === 1) e.preventDefault(); });   // no autoscroll
     el.addEventListener("pointerdown", e => {
+        if (e.button === 1) { skyGrab(e); return; }
         el.setPointerCapture(e.pointerId);
         pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
-        down = { x: e.clientX, y: e.clientY, pan: e.button === 2 || e.shiftKey };
+        down = { pan: e.button === 2 || e.shiftKey };
         moved = 0;
         if (SKY.drift) { SKY.drift = false; document.getElementById("sky-drift").checked = false; }
     });
@@ -756,19 +770,25 @@ function skyWire(el) {
         if (!prev) { skyHover(e); return; }
         const dx = e.clientX - prev.x, dy = e.clientY - prev.y;
         moved += Math.abs(dx) + Math.abs(dy);
+        const g = SKY.goal;
         if (pts.size === 2) {
             const [p, q] = [...pts.entries()];
             const other = p[0] === e.pointerId ? q[1] : p[1];
             const before = Math.hypot(prev.x - other.x, prev.y - other.y);
             const after = Math.hypot(e.clientX - other.x, e.clientY - other.y);
-            if (before > 0) SKY.goal.r = Math.min(2400, Math.max(30, SKY.goal.r * before / after));
+            if (before > 0) { g.r = Math.min(2400, Math.max(30, g.r * before / after)); now("r"); }
         } else if (down && down.pan) {
-            const g = SKY.goal, s = g.r * 0.0016;
-            g.x += (-Math.cos(g.th) * dx - Math.sin(g.th) * dy) * s;
-            g.z += (Math.sin(g.th) * dx - Math.cos(g.th) * dy) * s;
+            // slide along the screen: what is under the cursor stays under it
+            const s = 2 * g.r * Math.tan(SKY.camera.fov * Math.PI / 360) / Math.max(1, el.clientHeight);
+            const ct = Math.cos(g.th), st = Math.sin(g.th), cp = Math.cos(g.ph), sp = Math.sin(g.ph);
+            g.x += (-ct * dx - cp * st * dy) * s;
+            g.y += sp * dy * s;
+            g.z += (st * dx - cp * ct * dy) * s;
+            now("x", "y", "z");
         } else {
-            SKY.goal.th -= dx * 0.005;
-            SKY.goal.ph = Math.min(1.48, Math.max(0.12, SKY.goal.ph - dy * 0.004));
+            g.th -= dx * 0.005;
+            g.ph = Math.min(1.48, Math.max(0.12, g.ph - dy * 0.004));
+            now("th", "ph");
         }
         pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
     });
@@ -784,7 +804,75 @@ function skyWire(el) {
     el.addEventListener("wheel", e => {
         e.preventDefault();
         SKY.goal.r = Math.min(2400, Math.max(30, SKY.goal.r * Math.exp(e.deltaY * 0.0011)));
+        now("r");
     }, { passive: false });
+}
+
+// Moving a tower: the middle button held on any of its floors, a footprint
+// follows the cursor across the grid, and letting go stands it there; a tower
+// already in that cell trades places with it. Kept in this browser; ⟲ puts
+// them all back. 24 Oct 2026: "MMB down to move a floor (will be especially
+// useful when more skyways exist)".
+const PLACE_KEY = "seren-loci-city-places";
+function skyPlacesLoad() {
+    try { SKY.place = JSON.parse(localStorage.getItem(PLACE_KEY) || "{}") || {}; } catch (_) { SKY.place = {}; }
+}
+function skyPlacesSave() {
+    try { localStorage.setItem(PLACE_KEY, JSON.stringify(SKY.place)); } catch (_) { /* this visit only, then */ }
+    document.getElementById("sky-unplace").hidden = !Object.keys(SKY.place).length;
+}
+function skyGround(e) {
+    const rect = SKY.renderer.domElement.getBoundingClientRect();
+    const v = new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
+    const ray = new THREE.Raycaster();
+    ray.setFromCamera(v, SKY.camera);
+    return ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), new THREE.Vector3());
+}
+function skyGrab(e) {
+    const f = skyRay(e);
+    if (!f || !SKY.data) return;
+    e.preventDefault();
+    const el = SKY.renderer.domElement;
+    el.setPointerCapture(e.pointerId);
+    const ghost = SKY.ghost || (SKY.ghost = new THREE.Mesh(new THREE.BoxGeometry(SKY_BLOCK * 0.62, 1.2, SKY_BLOCK * 0.62),
+        new THREE.MeshBasicMaterial({ color: 0xffcf7a, transparent: true, opacity: 0.4, depthWrite: false })));
+    SKY.scene.add(ghost);
+    let cell = null;
+    const move = ev => {
+        const p = skyGround(ev);
+        if (!p) return;
+        cell = [Math.round(p.x / SKY_BLOCK), Math.round(p.z / SKY_BLOCK)];
+        ghost.position.set(cell[0] * SKY_BLOCK, 0.6, cell[1] * SKY_BLOCK);
+    };
+    const done = () => {
+        el.removeEventListener("pointermove", move);
+        el.removeEventListener("pointerup", done);
+        el.removeEventListener("pointercancel", done);
+        SKY.scene.remove(ghost);
+        if (cell) skyMoveTower(f.project, cell);
+    };
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", done);
+    el.addEventListener("pointercancel", done);
+    move(e);
+}
+function skyMoveTower(project, cell) {
+    const from = SKY.cellOf[project];
+    if (!from || (from[0] === cell[0] && from[1] === cell[1])) return;
+    const other = Object.keys(SKY.cellOf).find(p => p !== project && SKY.cellOf[p][0] === cell[0] && SKY.cellOf[p][1] === cell[1]);
+    SKY.place[project] = cell;
+    if (other) SKY.place[other] = from;
+    skyPlacesSave();
+    const keep = SKY.selected && skyAddr(SKY.selected.project, SKY.selected.key);
+    skyCity(SKY.data);
+    SKY.selected = null; SKY.near = null;
+    skyLight(document.getElementById("sky-search").value);
+    if (keep && SKY.byAddr.has(keep)) skySelect(SKY.byAddr.get(keep));
+}
+
+function skyAmberSay() {
+    const n = SKY.floors.filter(f => f.recheck).length;
+    document.getElementById("lg-amber-n").textContent = n ? `${n} to read again` : "none right now";
 }
 
 function skyRay(e) {
@@ -940,6 +1028,11 @@ function skyControls() {
     document.getElementById("sky-ways").addEventListener("change", e => { SKY.waysOn = e.target.checked; skyLook(); });
     document.getElementById("sky-search").addEventListener("input", e => skyLight(e.target.value));
     document.getElementById("sky-fit").addEventListener("click", () => { skySelect(null); skyFit(); });
+    document.getElementById("sky-unplace").addEventListener("click", () => {
+        SKY.place = {};
+        skyPlacesSave();
+        if (SKY.data) { skyCity(SKY.data); skyLight(document.getElementById("sky-search").value); }
+    });
     document.getElementById("sky-recheck").addEventListener("click", () => {
         const due = SKY.floors.filter(f => f.recheck);
         if (!due.length) return;
@@ -966,11 +1059,14 @@ async function loadSkyline() {
     loading.textContent = "raising the city…";
     const [, data] = await Promise.all([skyLib(), api("/city")]);
     if (!SKY.built) skyBuild();
+    if (!SKY.place) skyPlacesLoad();
     skyControls();
+    document.getElementById("sky-unplace").hidden = !Object.keys(SKY.place).length;
     document.getElementById("sky-drift").checked = SKY.drift;
     const keep = SKY.selected && skyAddr(SKY.selected.project, SKY.selected.key);
     SKY.data = data;
     skyCity(data);
+    skyAmberSay();
     SKY.selected = null; SKY.near = null;
     skyLight(document.getElementById("sky-search").value);
     if (keep && SKY.byAddr.has(keep)) skySelect(SKY.byAddr.get(keep));

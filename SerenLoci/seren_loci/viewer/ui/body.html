@@ -29,7 +29,7 @@
     <div class="search-bar">
         <input class="q" id="searchQ" placeholder="search key / value / why - or type an exact key for a 1.0 hit" />
         <select id="searchScope"><option value="">All scopes</option></select>
-        <button class="btn" id="searchBtn">Search</button>
+        <button class="btn primary" id="searchBtn">Search</button>
     </div>
     <div class="opts">
         <label class="chk"><input type="checkbox" id="incFund" checked /> include fundamentals</label>
@@ -45,7 +45,7 @@
     <div class="search-bar">
         <select id="histProject" style="min-width:160px;"></select>
         <input class="q" id="histKey" placeholder="key (e.g. cuda.no_vmm)" />
-        <button class="btn" id="histBtn">Trace</button>
+        <button class="btn primary" id="histBtn">Trace</button>
     </div>
     <div class="muted" style="font-size:12px; margin-bottom:12px;">Every value a key has ever held, newest first - the audit trail strict-supersede preserves.</div>
     <div class="stack" id="histStack"><div class="empty">Pick a chamber + key, or hit “history” on any fact.</div></div>
@@ -76,6 +76,7 @@
             <input type="search" id="sky-search" placeholder="light up…" aria-label="Light up facts that mention" />
             <button class="sky-btn" id="sky-recheck" title="Visit the facts something changed under" hidden></button>
             <button class="sky-btn" id="sky-fit" title="The whole city">⌖</button>
+            <button class="sky-btn" id="sky-unplace" title="Put every tower back where it stood" hidden>⟲</button>
         </div>
         <div class="sky-legend">
             <div class="sky-stats" id="sky-stats"></div>
@@ -83,7 +84,8 @@
             <div><i class="lg-floor"></i>a floor is a fact, oldest at the bottom</div>
             <div><i class="lg-wide"></i>wider: changed more, or more rests on it</div>
             <div><i class="lg-way"></i>skyway: rests on (lights walk toward the reason)</div>
-            <div><i class="lg-amber"></i>amber: something under it changed</div>
+            <div title="A fact that rests on another one that has since changed or been forgotten: worth reading again. Its floor and beacon glow amber, and the ! button visits each one."><i class="lg-amber"></i>amber: what it rests on changed - <span id="lg-amber-n">none right now</span></div>
+            <div class="faint">drag to turn · wheel to zoom · right-drag to pan · middle-drag moves a tower</div>
         </div>
         <div class="sky-tip" id="sky-tip" hidden></div>
         <div class="sky-info" id="sky-info" hidden></div>

@@ -46,7 +46,7 @@ dependencies = [
     # The shared Seren core: token resolution, config/version helpers, the auth
     # middleware, the viewer baseplate. Pinned <1 so a MAJOR (a security change
     # that can't be defaulted) is the only thing that ever forces a bump here.
-    "seren-meninges>=2.4.0,<6",
+    "seren-meninges>=6.0.0,<7",
     # Shared request logging - one copy across the family (SerenSinew). Mounted
     # outermost (before auth) so even 401s get logged. -> loci-requests.log.
     "seren-sinew>=5.2.0,<6",  # 5.2.0: seren_sinew.blobs and the `blobs` store kind (figures); 1.10.0: stores, rehearsal, restore_at_startup
