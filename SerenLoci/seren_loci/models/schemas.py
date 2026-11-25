@@ -167,6 +167,9 @@ class SearchRequest(BaseModel):
     include_superseded: bool = False    # history is off by default; on, retired values join
                                         # the exact rung (below the live one) and the lexical
                                         # lane; the vector lane stays live-only
+    with_citations: bool = False        # each live hit carries what it rests on (rests_on), live
+                                        # facts with ids, so a fan can hang them off the hit
+                                        # (the Callosum's citation edges) with no second call
 
 
 class SearchHit(BaseModel):
@@ -196,6 +199,10 @@ class SearchHit(BaseModel):
     # address and how ("seren-hippocampus/hippocampus-loop superseded"). A
     # reader takes the hit as possibly stale until it is rechecked.
     recheck: Optional[list[str]] = None
+    # What this fact rests on, when the search asked (with_citations): the cited
+    # facts as they read now, each {id, project, key, value, why, because}, the
+    # because being the citation's own reason. Live hits only; None when not asked.
+    rests_on: Optional[list[dict[str, Any]]] = None
 
 
 class SearchResponse(BaseModel):

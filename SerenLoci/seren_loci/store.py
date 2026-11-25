@@ -946,7 +946,8 @@ class LociStore:
     @_serialized
     def search(self, query: str, project: Optional[str] = None,
                n_results: int = 10, include_fundamentals: bool = True,
-               include_superseded: bool = False) -> tuple[list[SearchHit], str]:
+               include_superseded: bool = False,
+               with_citations: bool = False) -> tuple[list[SearchHit], str]:
         """Discovery search. Returns (hits, finder_kind).
 
         Order of operations:
@@ -1027,7 +1028,23 @@ class LociStore:
                     (h.project, h.key)).fetchall()]
                 if under:
                     h.recheck = under
+                if with_citations:
+                    h.rests_on = self._rests_on_live(h.project, h.key)
         return ordered, self.finder_kind
+
+    def _rests_on_live(self, project: str, key: str) -> list[dict[str, Any]]:
+        """What a live fact rests on, as the facts themselves: each cited
+        address's LIVE value with its id and why, and the citation's own
+        because. A cited address with no live value is left out (a reader is
+        handed what holds now; the recheck says what changed). The skyway,
+        walked toward the reason (24 Nov 2026: the Callosum's citation edges)."""
+        rows = self._conn.execute(
+            "SELECT f.id, f.project, f.key, f.value, f.why, r.why AS because FROM rests_on r "
+            "JOIN facts f ON f.project = r.on_project AND f.key = r.on_key AND f.superseded_at IS NULL "
+            "WHERE r.project = ? AND r.key = ? ORDER BY r.created_at, r.on_project, r.on_key",
+            (project, key)).fetchall()
+        return [{"id": r["id"], "project": r["project"], "key": r["key"], "value": r["value"],
+                 "why": r["why"], "because": r["because"]} for r in rows]
 
     # ──────────────────────────────────────────────────────────────────
     #  internals

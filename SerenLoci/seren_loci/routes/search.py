@@ -24,6 +24,7 @@ async def search(request: Request, req: SearchRequest = Body(...)) -> SearchResp
         n_results=req.n_results,
         include_fundamentals=req.include_fundamentals,
         include_superseded=req.include_superseded,
+        with_citations=req.with_citations,
     )
     return SearchResponse(query=req.query, project=req.project,
                           hits=hits, finder=finder)
