@@ -106,7 +106,7 @@ def test_a_word_only_the_why_holds_finds_the_fact_behind_a_long_value(tmp_db):
     s.set_fact(FactWrite(key="brace", value="new line", why="readability"))
     s.set_fact(FactWrite(key="cuda", value="compile time flag", why="runtime env ignored"))
     # the whole-fact text puts the why past the window: that lane cannot see it
-    whole, why_lane = store_mod._finder_texts("*", "eyes", LONG_VALUE, "pinkeye")
+    whole, why_lane, _fact = store_mod._finder_texts("*", "eyes", LONG_VALUE, "pinkeye")
     assert "pinkeye" not in " ".join(whole.split()[:WINDOW]) and "pinkeye" in why_lane
     near = s._finder._vector_search_augmented("pinkeye", 3)
     assert near[0][0] == s.get_fact("*", "eyes").id
@@ -116,12 +116,13 @@ def test_a_word_only_the_why_holds_finds_the_fact_behind_a_long_value(tmp_db):
 
 def test_a_short_fact_keeps_the_whole_fact_text_it_always_had():
     # fundamentals: exactly the old joined text, plus the why lane
-    assert store_mod._finder_texts("*", "k", "v", "w") == ["k  v  w", "k  w"]
-    assert store_mod._finder_texts("*", "k", "v", None) == ["k  v"]
+    # and since 25 Nov 2026 a lane for the fact by itself, when there is a why to tell it from
+    assert store_mod._finder_texts("*", "k", "v", "w") == ["k  v  w", "k  w", "k  v"]
+    assert store_mod._finder_texts("*", "k", "v", None) == ["k  v"], "no why: the whole fact IS the fact"
     assert store_mod._finder_texts("*", "k", "v", "  ") == ["k  v    "], "an empty why gets no lane of its own"
-    # a project leads both lanes (test_project_in_text.py)
+    # a project leads every lane (test_project_in_text.py)
     assert store_mod._finder_texts("Laionan", "title", "Warden", "the siege") == [
-        "Laionan  title  Warden  the siege", "Laionan  title  the siege"]
+        "Laionan  title  Warden  the siege", "Laionan  title  the siege", "Laionan  title  Warden"]
 
 
 # ── every lane moves together ───────────────────────────────────────────────
@@ -131,7 +132,7 @@ def test_lanes_follow_the_fact_through_set_supersede_forget_and_move(tmp_db):
     s.set_fact(FactWrite(key="bare", value="no reason"))
     s.set_fact(FactWrite(key="reasoned", value="v", why="w"))
     bare, reasoned = _rowid(s, "*", "bare"), _rowid(s, "*", "reasoned")
-    assert _lanes(s) == {bare: [0], reasoned: [0, 1]}
+    assert _lanes(s) == {bare: [0], reasoned: [0, 1, 2]}
 
     s.set_fact(FactWrite(key="reasoned", value="v2"))                # supersede, and the why is gone
     reasoned2 = _rowid(s, "*", "reasoned")
@@ -139,11 +140,11 @@ def test_lanes_follow_the_fact_through_set_supersede_forget_and_move(tmp_db):
 
     s.set_fact(FactWrite(key="bare", value="now with one", why="found it"))
     bare2 = _rowid(s, "*", "bare")
-    assert _lanes(s) == {reasoned2: [0], bare2: [0, 1]}
+    assert _lanes(s) == {reasoned2: [0], bare2: [0, 1, 2]}
 
     s.move_fact(FactMove(key="bare", to_project="elsewhere", why_changed="tidy"))
     moved = _rowid(s, "elsewhere", "bare")
-    assert _lanes(s) == {reasoned2: [0], moved: [0, 1]}
+    assert _lanes(s) == {reasoned2: [0], moved: [0, 1, 2]}
 
     assert s.forget("elsewhere", "bare", "done")
     assert _lanes(s) == {reasoned2: [0]}
@@ -171,7 +172,7 @@ def test_a_floor_boot_then_a_vector_boot_prunes_and_backfills_every_lane(tmp_db)
     floor.set_fact(FactWrite(key="late", value="written on the floor", why="no finder then"))
     floor.close()
     s = _open(tmp_db)
-    assert _lanes(s) == {_rowid(s, "*", "k"): [0, 1], _rowid(s, "*", "late"): [0, 1]}
+    assert _lanes(s) == {_rowid(s, "*", "k"): [0, 1, 2], _rowid(s, "*", "late"): [0, 1, 2]}
     s.close()
 
 
@@ -191,7 +192,7 @@ def test_a_store_indexed_by_the_one_lane_recipe_rebuilds_on_boot(tmp_db):
     s = _open(tmp_db)
     assert s._conn.execute("SELECT value FROM loci_meta WHERE key='vec_recipe'").fetchone()[0] == store_mod._RECIPE
     assert "vec_rowid" in s._conn.execute("SELECT sql FROM sqlite_master WHERE name='facts_vec'").fetchone()[0]
-    assert _lanes(s) == {_rowid(s, "*", "eyes"): [0, 1], _rowid(s, "*", "brace"): [0, 1]}
+    assert _lanes(s) == {_rowid(s, "*", "eyes"): [0, 1, 2], _rowid(s, "*", "brace"): [0, 1, 2]}
     assert s._finder._vector_search_augmented("pinkeye", 1)[0][0] == s.get_fact("*", "eyes").id
     s.close()
 

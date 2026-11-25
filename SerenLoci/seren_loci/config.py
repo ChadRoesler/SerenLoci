@@ -89,6 +89,17 @@ class StorageConfig(BaseModel):
     # SEREN_LOCI_EMBEDDING_CACHE_PATH. Only created when an embedder is
     # configured; the embedding-free floor never touches this path.
     embedding_cache_path: Optional[str] = None
+    # How much a match on the WORDS counts beside a match on the meaning when a
+    # hybrid store ranks its hits (0..1; store._hybrid_score). 1.0 is full
+    # strength. What suits depends on what the store holds and how it is asked,
+    # and the measurements pull both ways (25 Nov 2026, right fact first, 1.0
+    # against 0.5): where facts are looked up by their exact terms the words
+    # earn their keep (orkrail 0.97 against 0.91, mycelium 0.90 against 0.81);
+    # where people ask in their own words they get in the way (Vellmarch player
+    # voice 0.61 against 0.64, its fat-fact pack 0.39 against 0.52, a persona's
+    # own facts 0.73 against 0.77). So: a knob for a house, full strength by
+    # default. Not read by an embedding-free store, which has only the words.
+    words_weight: float = 1.0
 
 
 class TlsConfig(BaseModel):

@@ -1002,7 +1002,7 @@ class LociStore:
                     continue
                 if f.id in hits:
                     continue  # exact already claimed it
-                score = _hybrid_score(distance, bm25_rel)
+                score = _hybrid_score(distance, bm25_rel, self._config.storage.words_weight)
                 hits[f.id] = _hit(f, score=round(score, 6), kind="hybrid",
                                   raw_distance=distance)
         else:
@@ -1187,17 +1187,23 @@ def _finder_texts(project: str, key: str, value: str, why: Optional[str]) -> lis
     texts = ["  ".join(head + [value] + ([why] if why else []))]
     if why and why.strip():
         texts.append("  ".join(head + [why]))
+        # lane 2 (25 Nov 2026): the fact by itself. Chad: "facts are short, the
+        # why can be long. the why matters nearly as much as the fact does."
+        # With only the two lanes above, a short fact with a long why had no
+        # vector of its own: both were mostly why. A fact with no why needs no
+        # third lane; lane 0 already is the fact.
+        texts.append("  ".join(head + [value]))
     return texts
 
 
 # How many vectors a fact may hold, and which lane is which. A fact's vectors
 # sit at vec_rowid = fact rowid * _LANES + lane, so `vec_rowid / _LANES` is
 # the fact's rowid in SQL (integer division) and its lanes sit side by side.
-_LANES = 2
+_LANES = 3
 # Names the recipe _finder_texts embeds. Stamped in loci_meta beside the
 # embedder; a store whose index was built by another recipe (or before there
 # was a stamp for it) rebuilds from text on boot - lossless, like a model change.
-_RECIPE = "project:whole+why/2026-10-19"
+_RECIPE = "project:whole+why+fact/2026-11-25"
 
 
 # The exact rung owns 1.0. Every non-exact hit MUST stay strictly below it, or
@@ -1207,7 +1213,26 @@ _RECIPE = "project:whole+why/2026-10-19"
 _MAX_NONEXACT = 0.99
 
 
-def _hybrid_score(distance: Optional[float], bm25_rel: Optional[float]) -> float:
+def _vector_score(distance: float) -> float:
+    """How near a fact's vector sits, on 0..1: its cosine similarity. The
+    finder's vectors are unit length and `distance` is the straight line
+    between them, so cosine is 1 - d*d/2.
+
+    Until 25 Nov 2026 this was 1/(1+d). Real distances here run about 0.9
+    (a fact that answers the question) to 1.25 (an unrelated one), and over
+    that span 1/(1+d) moves from 0.53 to 0.44: nine points, beside a words
+    lane that runs 0.05 to 1.0. In the noisy-OR the words decided, and the
+    store's first row was whichever fact shared most words with the question
+    (a long fact shares words with everything). Cosine runs 0.60 to 0.22 over
+    the same span. Measured through this store on eleven sets, 684 questions,
+    right fact first: 416 before, 451 with this; better or level on ten sets
+    (Vellmarch player voice 0.54 to 0.61, its fat-fact pack 0.25 to 0.39,
+    lattice 0.55 to 0.82, helix 0.45 to 0.55), two questions worse on one
+    (mycelium, 0.93 to 0.90)."""
+    return max(0.0, min(1.0, 1.0 - distance * distance / 2.0))
+
+
+def _hybrid_score(distance: Optional[float], bm25_rel: Optional[float], words: float = 1.0) -> float:
     """Absolute relevance for a hybrid hit, on the store's 0..1 contract axis.
 
     Deliberately NOT the RRF value. RRF is a RANK fusion: a doc at rank 0 in both
@@ -1216,8 +1241,11 @@ def _hybrid_score(distance: Optional[float], bm25_rel: Optional[float]) -> float
     a tie. We score from the ABSOLUTE lane signals the module contract already
     prescribes:
 
-        vector  -> 1/(1+distance)              (mirrors SerenLoci /search)
-        lexical -> 0.05 + 0.95 * bm25/(1+bm25)
+        vector  -> cosine similarity, 1 - d*d/2   (_vector_score, and why)
+        lexical -> 0.05 + 0.95 * words * bm25/(1+bm25)
+
+    `words` (storage.words_weight, 0..1) is how much a match on the words counts
+    beside a match on the meaning. 1.0 is the words lane at full strength.
 
     and fuse the two with a noisy-OR (1 - prod(1 - s)) so a hit supported by BOTH
     lanes scores higher than either alone - more independent evidence, higher
@@ -1227,10 +1255,10 @@ def _hybrid_score(distance: Optional[float], bm25_rel: Optional[float]) -> float
     """
     lane_scores: list[float] = []
     if distance is not None:
-        lane_scores.append(1.0 / (1.0 + distance))
+        lane_scores.append(_vector_score(distance))
     if bm25_rel is not None:
         base = bm25_rel / (1.0 + bm25_rel)
-        lane_scores.append(0.05 + 0.95 * base)
+        lane_scores.append(0.05 + 0.95 * max(0.0, min(1.0, words)) * base)
     if not lane_scores:
         # No lane fired (shouldn't happen for a hybrid candidate) - never emit a
         # phantom score if it somehow does.
