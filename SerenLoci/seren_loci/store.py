@@ -941,6 +941,73 @@ class LociStore:
         return self._attach([_row_to_fact(r) for r in rows])
 
     # ──────────────────────────────────────────────────────────────────
+    #  READ - by name: the association door (26 Nov 2026)
+    # ──────────────────────────────────────────────────────────────────
+    @_serialized
+    def by_name(self, names: list[str], n_results: int = 5,
+                exclude_ids: Optional[list[str]] = None,
+                query: Optional[str] = None) -> list[SearchHit]:
+        """The live facts filed under any of `names`: the twin of an episodic
+        store's lookup by topic tag. Chad, 25 Nov 2026: "MEMORY HAS TOPIC A
+        PARALLEL TO LOCIS KEYS". A fact's project and key are the names a
+        person gave it; this is the door that lets something else ask by them,
+        so an episode tagged with a thing can bring the facts about that thing.
+
+        A fact answers to a name when the name IS its project or its key, or
+        when every word of the name is a word of its project or key ('nuc'
+        finds nuc-access; 'seren-kitchen' finds everything filed under that
+        project and any key carrying both words). '*' is true everywhere and
+        answers to nothing. Exact words only: no stemming, no spelling
+        forgiveness. Not a search: nothing is embedded to decide who is in.
+
+        Ranked by how many of the asked names a fact answers to, a name that IS
+        its project or key counting ahead of one it only has the words of
+        ('seren-kitchen' puts the facts filed under that project before a
+        kitchen fact filed under seren-workbench). Ties: with a question
+        (`query`) and a finder, the fact nearest the question first;
+        otherwise, and after that, the newest. Each hit says which names
+        matched (matched_names) and its score is the share of the asked names
+        it answered, kept below an exact hit's 1.0. exclude_ids leaves out
+        what the caller already holds.
+
+        A linear pass over the live facts: this store is small by design, the
+        same reasoning as its one lock."""
+        wanted = list(dict.fromkeys(str(n).strip().lower() for n in names if n and str(n).strip()))
+        if not wanted:
+            return []
+        exclude = set(exclude_ids or ())
+        found: list[tuple[Fact, list[str], int]] = []      # (fact, the names it answers to, how many of them exactly)
+        facts = self.list_facts()
+        for f in facts:
+            if f.id in exclude:
+                continue
+            project = "" if f.project == FUNDAMENTALS else f.project.lower()
+            key = f.key.lower()
+            words = _name_words(key) | _name_words(project)
+            exact = [n for n in wanted if n == key or (project and n == project)]
+            matched = [n for n in wanted if n in exact or (_name_words(n) and _name_words(n) <= words)]
+            if matched:
+                found.append((f, matched, len(exact)))
+        if not found:
+            return []
+        near: dict[str, float] = {}
+        if query and query.strip() and self._finder is not None and hasattr(self._finder, "_vector_search_augmented"):
+            try:
+                near = dict(self._finder._vector_search_augmented(query, len(facts)))
+            except Exception:  # noqa: BLE001 - a finder still warming: order by date, as with no question
+                near = {}
+        found.sort(key=lambda fm: (-len(fm[1]), -fm[2],
+                                   round(near[fm[0].id], 2) if fm[0].id in near else 9.0,
+                                   -fm[0].created_at))
+        out: list[SearchHit] = []
+        for f, matched, _exact in found[:max(1, n_results)]:
+            hit = _hit(f, score=round(min(len(matched) / len(wanted), _MAX_NONEXACT), 6), kind="name",
+                       raw_distance=near.get(f.id))
+            hit.matched_names = matched
+            out.append(hit)
+        return out
+
+    # ──────────────────────────────────────────────────────────────────
     #  READ - rungs 2 & 3: discovery (search)
     # ──────────────────────────────────────────────────────────────────
     @_serialized
@@ -1138,6 +1205,16 @@ def _fold(name: str) -> str:
 def _row_to_figure(row: sqlite3.Row) -> Figure:
     return Figure(digest=row["digest"], bytes=row["bytes"], mime=row["mime"], caption=row["caption"],
                   source=row["source"], kept_at=row["kept_at"])
+
+
+_NAME_WORD = re.compile(r"[a-z0-9]+")
+
+
+def _name_words(text: Optional[str]) -> set[str]:
+    """The words of a project, a key or a name asked for (by_name): lowercased
+    runs of letters and digits, three characters or more ('nuc' is a name;
+    'of' is not)."""
+    return {w for w in _NAME_WORD.findall(str(text or "").lower()) if len(w) >= 3}
 
 
 def _hit(f: Fact, score: float, kind: str,

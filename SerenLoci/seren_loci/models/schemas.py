@@ -203,6 +203,9 @@ class SearchHit(BaseModel):
     # facts as they read now, each {id, project, key, value, why, because}, the
     # because being the citation's own reason. Live hits only; None when not asked.
     rests_on: Optional[list[dict[str, Any]]] = None
+    # On a /by_name hit (match_kind "name"): which of the asked names this fact
+    # answered to. None on every other kind of hit.
+    matched_names: Optional[list[str]] = None
 
 
 class SearchResponse(BaseModel):
@@ -210,3 +213,20 @@ class SearchResponse(BaseModel):
     project: Optional[str]
     hits: list[SearchHit]
     finder: str                         # "hybrid" | "lexical" - which discovery path served
+
+
+class NameSearchRequest(BaseModel):
+    """/by_name: the facts filed under any of these names (store.by_name)."""
+    names: list[str] = Field(..., description="Names to match (any-of): a project, a key, or words of either.")
+    n_results: int = Field(default=5, ge=1, le=50)
+    # Fact ids to leave out: what the caller already holds, so only NEW facts come back.
+    exclude_ids: list[str] = Field(default_factory=list)
+    # The question being asked, when there is one. The names still decide who is
+    # in; among facts answering to equally many, the nearest to the question leads.
+    query: Optional[str] = None
+
+
+class NameSearchResponse(BaseModel):
+    names: list[str]
+    hits: list[SearchHit]
+    finder: str                         # which finder ordered a tie when a question came along
